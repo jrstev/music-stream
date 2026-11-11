@@ -4,7 +4,7 @@ Google's assistant can't search a self-hosted library (see [landscape.md](landsc
 
 > "Okay Nabu, play Teardrop by Massive Attack in the living room"
 
-Assist then searches your library through Music Assistant and plays the best match on your Nest speaker. It answers out loud ("Playing Teardrop by Massive Attack in the living room"), or tells you it couldn't find the song.
+Assist then searches your library through Music Assistant and plays the best match on your Nest speaker. The search-and-play logic lives in `script.music_play_from_library`, which the AI setup in [ai-assist.md](ai-assist.md) also uses. It answers out loud ("Playing Teardrop by Massive Attack in the living room"), or tells you it couldn't find the song.
 
 Speech recognition, intent matching and the spoken replies all run locally, with no cloud.
 
@@ -73,9 +73,9 @@ Starting from the stack in `deploy/` (see the main README):
 
 7. **Test without a microphone.** Open Assist in the HA web UI (the speech-bubble icon) and type `play teardrop by massive attack`. Settings → Voice assistants → ⋮ → *Debug* shows the matched sentence, the slots and each step.
 
-## Optional: an AI model for vague requests
+## Optional: let an AI interpret requests
 
-The setup above handles the phrases in the table. For "play that song from the Drive soundtrack" or "something upbeat for cooking", add an AI conversation agent: Ollama (local), Anthropic or OpenAI. Turn on **"Prefer handling commands locally"**, so the exact phrases still go through this repo's intent and only unmatched requests reach the AI model. Music Assistant's documentation has AI-oriented scripts/blueprints for those requests.
+For requests like "play the song from Drive" or "something mellow for cooking", put an AI model (Anthropic Claude in the cloud, or Ollama locally) in front of the same scripts. See [ai-assist.md](ai-assist.md).
 
 ## Tuning
 
@@ -90,6 +90,6 @@ The setup above handles the phrases in the table. For "play that song from the D
 
 The sentence matching and the result-selection logic are unit-tested:
 - `tests/test_voice_sentences.py` runs the phrases through hassil, the matcher HA itself uses.
-- `tests/test_music_voice_templates.py` renders the package's Jinja templates against fake search results.
+- `tests/test_music_voice_templates.py` renders the scripts' Jinja templates against fake search results.
 
 The Home Assistant side (the `music_assistant.search` response shape, `config_entry_id()`, area lookup) has not been run against a live install yet. If something misbehaves, the Assist debug view shows which step failed.

@@ -8,6 +8,7 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
 - **You don't need to build the streaming part.** Existing open-source tools already do it well. Nest speakers are Cast receivers, and **Music Assistant** can push your library to them (including speaker groups).
 - **The missing piece is voice.** Google won't send "play X" to you, so this repo covers two routes:
   - **Any song, any artist:** Home Assistant **Assist**, fully local. "Okay Nabu, play Teardrop by Massive Attack in the living room" searches your library and plays it on the Nest speaker. See [`docs/voice-assist.md`](docs/voice-assist.md).
+  - **Natural requests with AI:** put Claude (cloud) or an Ollama model (local) in front, so "play the song from Drive" or "something mellow for cooking" works too. See [`docs/ai-assist.md`](docs/ai-assist.md).
   - **"Hey Google" for favorites:** Google Home routines with fixed phrases that trigger Home Assistant scripts, generated from your playlists (below).
 
 ## Architecture
@@ -45,7 +46,8 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
    - `out/ha_scripts.yaml`: add it to Home Assistant (`script: !include ha_scripts.yaml`), then reload scripts. Ask Google to "sync my devices". The scripts then show up as scenes.
    - `out/google_home_routines.yaml`: paste it into the Google Home **script editor** (home.google.com → Automations → Add new). Use the editor's autocomplete if a scene name needs a suffix (`--device-suffix`).
 5. Say **"Hey Google, play my jazz playlist"** or **"…play my jazz playlist in the living room"**.
-6. **Any-song voice control:** follow [`docs/voice-assist.md`](docs/voice-assist.md). It covers the local whisper/piper services already in the compose file, the `PlayLocalMusic` intent, and a microphone such as Home Assistant Voice PE or the HA phone app.
+6. **Any-song voice control:** follow [`docs/voice-assist.md`](docs/voice-assist.md). It covers the local whisper/piper services already in the compose file, the music scripts and intent, and a microphone such as Home Assistant Voice PE or the HA phone app.
+7. **AI interpretation (optional):** follow [`docs/ai-assist.md`](docs/ai-assist.md) to let Claude or a local Ollama model parse requests and call the music scripts as tools.
 
 Re-run step 4 whenever you add playlists. You can change the phrasing with `--phrase` and `--room-phrase`. Phrases start with "play my …" so Google's built-in "play X" handling is less likely to take over.
 

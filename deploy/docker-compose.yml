@@ -90,3 +90,25 @@ services:
     ports:
       - "10400:10400"
     profiles: ["wakeword"]
+
+  # --- Optional local AI model for interpreting requests (docs/ai-assist.md) ---
+  # docker compose --profile ai-local up -d ollama
+  # docker exec ollama ollama pull qwen3:8b
+  # Without a GPU, replies take several seconds; use a cloud model instead if that's too slow.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    profiles: ["ai-local"]
+    # NVIDIA GPU: uncomment (requires nvidia-container-toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

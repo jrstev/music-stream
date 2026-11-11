@@ -1,32 +1,81 @@
-# Assist -> Music Assistant: "play <song> by <artist> in the kitchen".
+# Voice -> Music Assistant, with or without an AI model interpreting the request.
 #
 # Loaded as a Home Assistant package. configuration.yaml needs:
 #   homeassistant:
 #     packages: !include_dir_named packages
 #
-# Flow:
-#   1. Work out up to two readings of what was said. Voice phrases are ambiguous:
-#      "play stand by me"   -> title "stand" by artist "me", or title "stand by me"
-#      "play the song kid a by radiohead" -> title "kid a by radiohead", or "kid a" by "radiohead"
-#   2. Search your library (Music Assistant) for each reading; keep the first
-#      result whose artist matches (when an artist was given).
-#   3. Play it on the speaker in the spoken area (or the default) and say what's playing.
+# Two scripts do the work. Expose both to Assist (Settings -> Voice assistants
+# -> Expose) and an AI conversation agent (Anthropic, Ollama, ...) can call them
+# as tools:
+#   script.music_play_from_library  search the library, play the best match, report back
+#   script.music_library_search     look things up without playing (for the AI to check spellings etc.)
 #
-# EDIT `default_player` below: the speaker used when no area is spoken.
-#   (Settings -> Entities, filter by "Music Assistant" to find the entity id.)
+# The PlayLocalMusic intent (custom_sentences/en/music.yaml) calls the same
+# play script for fixed phrases, so the non-AI pipeline keeps working.
+#
+# EDIT `default_player` in music_play_from_library: the speaker used when no
+# area is given (Settings -> Entities, filter by "Music Assistant").
 
-intent_script:
-  PlayLocalMusic:
-    speech:
-      text: "{{ action_response.speech }}"
-    action:
+script:
+  music_play_from_library:
+    alias: Play music from library
+    description: >-
+      Plays music from the user's own music library on a speaker. Use this for
+      every request to play music. Put only the title in `query` and the artist
+      in `artist`; set `exact` to true when you have already separated them.
+      Returns whether something was found, what is now playing, and close
+      alternatives when nothing matched.
+    mode: parallel
+    icon: mdi:music
+    fields:
+      query:
+        name: Query
+        description: >-
+          Song, album, artist or playlist name only (e.g. "Nightcall"), without
+          the artist or extra words like "the song".
+        required: true
+        example: Nightcall
+        selector:
+          text:
+      artist:
+        name: Artist
+        description: Artist name, if known (e.g. "Kavinsky"). Leave empty for artist/playlist requests.
+        example: Kavinsky
+        selector:
+          text:
+      media_type:
+        name: Media type
+        description: What to play. Defaults to track.
+        default: track
+        selector:
+          select:
+            options: [track, album, artist, playlist]
+      area:
+        name: Area
+        description: Room to play in, only if the user named one (e.g. "kitchen"). Otherwise leave empty.
+        selector:
+          area:
+      radio:
+        name: Radio mode
+        description: True for "music like X" requests; keeps playing similar tracks after the match.
+        default: false
+        selector:
+          boolean:
+      exact:
+        name: Exact
+        description: True when query and artist are already cleanly separated (AI callers should set this).
+        default: false
+        selector:
+          boolean:
+    sequence:
       - variables:
           default_player: media_player.kitchen_speaker   # <-- EDIT THIS
           q: "{{ query | default('') | trim }}"
           by: "{{ artist | default('') | trim }}"
-          kind: "{{ media_type | default('track') }}"
-          is_radio: "{{ radio | default('false') == 'true' }}"
-          spoken_area: "{{ area | default('') }}"
+          kind: "{{ media_type | default('track', true) }}"
+          is_radio: "{{ radio | default(false) | bool }}"
+          is_exact: "{{ exact | default(false) | bool }}"
+          spoken_area: "{{ area_name(area) if area | default('') and area_name(area) else area | default('') }}"
           mass_players: "{{ integration_entities('music_assistant') | select('match', 'media_player\\.') | list }}"
           area_players: >-
             {% if spoken_area %}
@@ -35,10 +84,12 @@ intent_script:
           player: >-
             {{ area_players[0] if area_players | count > 0 else default_player }}
           # Readings to try, most likely first: [{"name": ..., "artist": ...}, ...]
+          #   "stand" by "me"            -> also try the title "stand by me"
+          #   "kid a by radiohead" (one) -> also try "kid a" by "radiohead"
           readings: >-
             {% set r = [] %}
-            {% if exact_title | default('false') == 'true' or kind not in ['track', 'album'] %}
-              {% set r = [{'name': q, 'artist': ''}] %}
+            {% if is_exact or kind not in ['track', 'album'] %}
+              {% set r = [{'name': q, 'artist': by}] %}
             {% elif by %}
               {% set r = [{'name': q, 'artist': by}, {'name': q ~ ' by ' ~ by, 'artist': ''}] %}
             {% elif ' by ' in q %}
@@ -55,12 +106,13 @@ intent_script:
         then:
           - variables:
               result:
+                found: false
                 speech: "I don't know of a Music Assistant speaker in the {{ spoken_area }}."
           - stop: no player in area
             response_variable: result
 
-      # Two library searches (the second repeats the first when there is only one
-      # reading). Local library searches are fast; this avoids loop-scoping quirks.
+      # Two library searches (the second repeats the first when there is only
+      # one reading). Local library searches are fast; this avoids loop-scoping quirks.
       - action: music_assistant.search
         data:
           config_entry_id: "{{ config_entry_id(player) }}"
@@ -99,13 +151,26 @@ intent_script:
             {% if best and best.artists is defined and best.artists %}{{ best.artists[0].name }}{% endif %}
           description: >-
             {% if best_artist and kind in ['track', 'album'] %}{{ best.name }} by {{ best_artist }}{% elif best %}{{ best.name }}{% endif %}
+          # Up to 5 near-misses (ignoring the artist filter) for the AI to choose from.
+          alternatives: >-
+            {% set ns = namespace(out=[]) %}
+            {% for found in [found_first | default({}), found_second | default({})] %}
+              {% for item in (found or {}).get(kind ~ 's', [])[:5] %}
+                {% set a = item.artists[0].name if item.artists is defined and item.artists else '' %}
+                {% set entry = {'name': item.name, 'artist': a} %}
+                {% if entry not in ns.out and ns.out | count < 5 %}{% set ns.out = ns.out + [entry] %}{% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.out }}
 
       - if: "{{ not best }}"
         then:
           - variables:
               result:
+                found: false
                 speech: >-
                   Sorry, I couldn't find {{ 'the ' ~ kind ~ ' ' if kind != 'track' else '' }}{{ q }}{{ ' by ' ~ by if by else '' }} in your library.
+                alternatives: "{{ alternatives }}"
           - stop: not found
             response_variable: result
 
@@ -120,7 +185,79 @@ intent_script:
 
       - variables:
           result:
+            found: true
+            playing: "{{ description }}"
+            player: "{{ player }}"
             speech: >-
               {{ 'Playing music like ' if is_radio else 'Playing ' }}{{ description }}{{ ' in the ' ~ spoken_area if spoken_area else '' }}.
       - stop: done
         response_variable: result
+
+  music_library_search:
+    alias: Search music library
+    description: >-
+      Searches the user's own music library without playing anything. Use it to
+      check what exists (exact titles, spellings, which albums an artist has)
+      before calling "Play music from library", or after that returned no match.
+    mode: parallel
+    icon: mdi:magnify
+    fields:
+      query:
+        name: Query
+        description: Text to search for (title, artist, album or playlist name).
+        required: true
+        selector:
+          text:
+      media_type:
+        name: Media type
+        description: Limit to one kind. Leave empty to search everything.
+        selector:
+          select:
+            options: [track, album, artist, playlist]
+    sequence:
+      - variables:
+          player_for_entry: >-
+            {{ integration_entities('music_assistant') | select('match', 'media_player\\.') | first }}
+          kinds: "{{ [media_type] if media_type | default('') else ['track', 'album', 'artist', 'playlist'] }}"
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(player_for_entry) }}"
+          name: "{{ query }}"
+          media_type: "{{ kinds }}"
+          limit: 8
+          library_only: true
+        response_variable: found
+      - variables:
+          result: >-
+            {% set ns = namespace(out={}) %}
+            {% for k in kinds %}
+              {% set acc = namespace(rows=[]) %}
+              {% for item in (found or {}).get(k ~ 's', []) %}
+                {% set row = {'name': item.name} %}
+                {% if item.artists is defined and item.artists %}{% set row = dict(row, artist=item.artists[0].name) %}{% endif %}
+                {% if item.album is defined and item.album %}{% set row = dict(row, album=item.album.name) %}{% endif %}
+                {% set acc.rows = acc.rows + [row] %}
+              {% endfor %}
+              {% set ns.out = dict(ns.out, **{k ~ 's': acc.rows}) %}
+            {% endfor %}
+            {{ ns.out }}
+      - stop: done
+        response_variable: result
+
+intent_script:
+  # Fixed phrases from custom_sentences/en/music.yaml (non-AI pipeline).
+  PlayLocalMusic:
+    speech:
+      text: "{{ action_response.speech }}"
+    action:
+      - action: script.music_play_from_library
+        data:
+          query: "{{ query | default('') }}"
+          artist: "{{ artist | default('') }}"
+          media_type: "{{ media_type | default('track') }}"
+          area: "{{ area | default('') }}"
+          radio: "{{ radio | default('false') == 'true' }}"
+          exact: "{{ exact_title | default('false') == 'true' }}"
+        response_variable: played
+      - stop: done
+        response_variable: played
