@@ -1,0 +1,63 @@
+# Voice phrases for playing anything from your self-hosted library.
+# Handled by the PlayLocalMusic intent_script in packages/music_voice.yaml.
+#
+# Custom sentences are matched before Home Assistant's built-in ones.
+# Tips:
+#   - Titles containing " by " ("Stand by Me") usually work anyway (the intent
+#     retries the whole phrase as a title); to be explicit say
+#     "play the song called stand by me".
+#   - Add "in the <area>" / "on the <area>" to choose the speaker; otherwise the
+#     default player configured in packages/music_voice.yaml is used.
+language: en
+intents:
+  PlayLocalMusic:
+    data:
+      # --- tracks -------------------------------------------------------------
+      - sentences:
+          - "play [the] (song|track) {query} by {artist} [<where>]"
+          - "play {query} by {artist} [<where>]"
+        slots:
+          media_type: track
+      - sentences:
+          - "play [the] (song|track) {query} [<where>]"
+        slots:
+          media_type: track
+      - sentences:
+          - "play [the] (song|track) (called|titled|named) {query} [<where>]"
+        slots:
+          media_type: track
+          exact_title: "true"
+      # --- albums -------------------------------------------------------------
+      - sentences:
+          - "play [the] album {query} by {artist} [<where>]"
+          - "play [the] album {query} [<where>]"
+        slots:
+          media_type: album
+      # --- artists ------------------------------------------------------------
+      - sentences:
+          - "play [some] [music|songs] (by|from) [the] (artist|band) {query} [<where>]"
+          - "play [some] (music|songs) (by|from) {query} [<where>]"
+          - "play [the] (artist|band) {query} [<where>]"
+        slots:
+          media_type: artist
+      # --- playlists ----------------------------------------------------------
+      - sentences:
+          - "play [the|my] playlist {query} [<where>]"
+          - "play [the|my] {query} playlist [<where>]"
+        slots:
+          media_type: playlist
+      # --- radio mode (endless similar tracks) --------------------------------
+      - sentences:
+          - "play [something|music] (like|similar to) {query} [<where>]"
+        slots:
+          media_type: artist
+          radio: "true"
+
+expansion_rules:
+  where: "(in|on) [the] {area}"
+
+lists:
+  query:
+    wildcard: true
+  artist:
+    wildcard: true

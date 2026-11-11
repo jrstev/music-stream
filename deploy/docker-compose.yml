@@ -51,3 +51,42 @@ services:
     volumes:
       - ./data/homeassistant:/config
       - /etc/localtime:/etc/localtime:ro
+      # Assist voice config from this repo (see docs/voice-assist.md)
+      - ./homeassistant/custom_sentences:/config/custom_sentences:ro
+      - ./homeassistant/packages:/config/packages:ro
+
+  # --- Local voice pipeline for Assist (Wyoming protocol) ----------------------
+  # Add each in HA: Settings -> Devices & services -> Add -> Wyoming Protocol,
+  # host = 127.0.0.1 (HA uses host networking, so the published
+  # ports are reachable on localhost), port as below.
+
+  whisper:            # speech-to-text
+    image: rhasspy/wyoming-whisper:latest
+    container_name: whisper
+    restart: unless-stopped
+    # small-int8 is generally more accurate on song/artist names than tiny/base, at more CPU.
+    # On a Raspberry Pi use base-int8; with a GPU see the wyoming-whisper docs.
+    command: --model ${WHISPER_MODEL:-small-int8} --language ${VOICE_LANGUAGE:-en} --data-dir /data
+    ports:
+      - "10300:10300"
+    volumes:
+      - ./data/whisper:/data
+
+  piper:              # text-to-speech (spoken replies)
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
+    restart: unless-stopped
+    command: --voice ${PIPER_VOICE:-en_US-lessac-medium} --data-dir /data
+    ports:
+      - "10200:10200"
+    volumes:
+      - ./data/piper:/data
+
+  openwakeword:       # only for satellites without on-device wake word (Voice PE doesn't need it)
+    image: rhasspy/wyoming-openwakeword:latest
+    container_name: openwakeword
+    restart: unless-stopped
+    command: --preload-model ok_nabu
+    ports:
+      - "10400:10400"
+    profiles: ["wakeword"]

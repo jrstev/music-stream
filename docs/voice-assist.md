@@ -1,0 +1,95 @@
+# Voice: ask for any song with Home Assistant Assist
+
+Google's assistant can't search a self-hosted library (see [landscape.md](landscape.md)). Home Assistant's own voice assistant, **Assist**, can. This setup lets you say:
+
+> "Okay Nabu, play Teardrop by Massive Attack in the living room"
+
+Assist then searches your library through Music Assistant and plays the best match on your Nest speaker. It answers out loud ("Playing Teardrop by Massive Attack in the living room"), or tells you it couldn't find the song.
+
+Speech recognition, intent matching and the spoken replies all run locally, with no cloud.
+
+```
+ mic (Voice PE / phone app)                                      Nest speaker
+        │ audio                                                       ▲ Cast
+        ▼                                                             │
+ Home Assistant ── whisper (speech→text) ── custom sentence ── PlayLocalMusic ── Music Assistant
+        │                                     (music.yaml)     (music_voice.yaml)  search + play
+        └── piper (text→speech) → spoken reply on the mic device
+```
+
+## What you can say
+
+| Say | Plays |
+|---|---|
+| "play **teardrop** by **massive attack**" | a track (artist checked against the results) |
+| "play the song **paranoid android**" | a track |
+| "play the song called **stand by me**" | a track; the title is never split on "by" |
+| "play the album **kid a** [by **radiohead**]" | an album |
+| "play music by **boards of canada**" / "play the band **radiohead**" | an artist (shuffle/all tracks per Music Assistant) |
+| "play my **chill** playlist" / "play playlist **sunday morning**" | a playlist |
+| "play something like **bonobo**" | an artist in radio mode (endless similar tracks) |
+
+Add "**in the kitchen**" or "**on the office**" to any of these to choose the speaker. Without an area, the default player is used.
+
+Titles that contain "by" (e.g. "Stand by Me") usually work even without "called". The intent searches both readings ("stand" by "me", and the full title "stand by me") and only accepts a result whose artist actually matches.
+
+## Setup
+
+Starting from the stack in `deploy/` (see the main README):
+
+1. **Start the voice services**
+   ```sh
+   cd deploy && docker compose up -d whisper piper
+   # only if your satellite has no on-device wake word:
+   docker compose --profile wakeword up -d openwakeword
+   ```
+   The first start downloads the models (a few hundred MB for `small-int8`).
+
+2. **Load this repo's HA config.** The compose file already mounts `homeassistant/custom_sentences` and `homeassistant/packages` into `/config`. Add this to `deploy/data/homeassistant/configuration.yaml`:
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+   Edit `default_player` in `deploy/homeassistant/packages/music_voice.yaml` to your main speaker's Music Assistant entity, then restart Home Assistant.
+
+3. **Connect the speech engines.** Go to Settings → Devices & services → Add integration → **Wyoming Protocol**:
+   - host `127.0.0.1`, port `10300` (whisper)
+   - again with port `10200` (piper)
+   - port `10400` too, if you started openwakeword
+
+4. **Create the voice assistant.** Go to Settings → Voice assistants → Add assistant:
+   - Conversation agent: **Home Assistant**
+   - Speech-to-text: **faster-whisper**
+   - Text-to-speech: **piper**
+   
+   Make it the preferred assistant.
+
+5. **Put each Nest speaker in an area.** Check Settings → Areas, so that the Music Assistant `media_player` entity for each speaker is in the right room. The area name is what you say ("in the living room").
+
+6. **Add a microphone.** Pick one:
+   - **Home Assistant Voice Preview Edition.** The simplest option: it has an on-device wake word, adopts automatically, and you assign it to the same area as the nearby Nest speaker. Its replies come from its own small speaker; the music plays on the Nest.
+   - **Home Assistant Companion app.** On Android you can make it the default digital assistant (long-press power or the home button), and Wear OS works too. On iOS, use the Assist shortcut or widget.
+   - **DIY ESPHome satellite** (ESP32-S3 boards). Use openwakeword if it has no on-device wake word.
+
+7. **Test without a microphone.** Open Assist in the HA web UI (the speech-bubble icon) and type `play teardrop by massive attack`. Settings → Voice assistants → ⋮ → *Debug* shows the matched sentence, the slots and each step.
+
+## Optional: an AI model for vague requests
+
+The setup above handles the phrases in the table. For "play that song from the Drive soundtrack" or "something upbeat for cooking", add an AI conversation agent: Ollama (local), Anthropic or OpenAI. Turn on **"Prefer handling commands locally"**, so the exact phrases still go through this repo's intent and only unmatched requests reach the AI model. Music Assistant's documentation has AI-oriented scripts/blueprints for those requests.
+
+## Tuning
+
+- **Recognition of odd names.** Whisper sometimes mishears unusual artist names. Options:
+  - a larger model (`WHISPER_MODEL=medium-int8`, or a GPU build)
+  - saying the artist's more common spelling
+  - adding the AI agent above, which handles near-misses well
+- **Raspberry Pi.** Use `WHISPER_MODEL=base-int8`, or run whisper on a faster machine on your network (point the Wyoming integration at it).
+- **Other languages.** Set `VOICE_LANGUAGE` and `PIPER_VOICE`, and translate `custom_sentences/en/music.yaml` into `custom_sentences/<lang>/`.
+
+## Status
+
+The sentence matching and the result-selection logic are unit-tested:
+- `tests/test_voice_sentences.py` runs the phrases through hassil, the matcher HA itself uses.
+- `tests/test_music_voice_templates.py` renders the package's Jinja templates against fake search results.
+
+The Home Assistant side (the `music_assistant.search` response shape, `config_entry_id()`, area lookup) has not been run against a live install yet. If something misbehaves, the Assist debug view shows which step failed.

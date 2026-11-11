@@ -1,0 +1,126 @@
+# Assist -> Music Assistant: "play <song> by <artist> in the kitchen".
+#
+# Loaded as a Home Assistant package. configuration.yaml needs:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Flow:
+#   1. Work out up to two readings of what was said. Voice phrases are ambiguous:
+#      "play stand by me"   -> title "stand" by artist "me", or title "stand by me"
+#      "play the song kid a by radiohead" -> title "kid a by radiohead", or "kid a" by "radiohead"
+#   2. Search your library (Music Assistant) for each reading; keep the first
+#      result whose artist matches (when an artist was given).
+#   3. Play it on the speaker in the spoken area (or the default) and say what's playing.
+#
+# EDIT `default_player` below: the speaker used when no area is spoken.
+#   (Settings -> Entities, filter by "Music Assistant" to find the entity id.)
+
+intent_script:
+  PlayLocalMusic:
+    speech:
+      text: "{{ action_response.speech }}"
+    action:
+      - variables:
+          default_player: media_player.kitchen_speaker   # <-- EDIT THIS
+          q: "{{ query | default('') | trim }}"
+          by: "{{ artist | default('') | trim }}"
+          kind: "{{ media_type | default('track') }}"
+          is_radio: "{{ radio | default('false') == 'true' }}"
+          spoken_area: "{{ area | default('') }}"
+          mass_players: "{{ integration_entities('music_assistant') | select('match', 'media_player\\.') | list }}"
+          area_players: >-
+            {% if spoken_area %}
+              {{ area_entities(spoken_area) | select('in', mass_players) | list }}
+            {% else %}[]{% endif %}
+          player: >-
+            {{ area_players[0] if area_players | count > 0 else default_player }}
+          # Readings to try, most likely first: [{"name": ..., "artist": ...}, ...]
+          readings: >-
+            {% set r = [] %}
+            {% if exact_title | default('false') == 'true' or kind not in ['track', 'album'] %}
+              {% set r = [{'name': q, 'artist': ''}] %}
+            {% elif by %}
+              {% set r = [{'name': q, 'artist': by}, {'name': q ~ ' by ' ~ by, 'artist': ''}] %}
+            {% elif ' by ' in q %}
+              {% set parts = q.rsplit(' by ', 1) %}
+              {% set r = [{'name': parts[0], 'artist': parts[1]}, {'name': q, 'artist': ''}] %}
+            {% else %}
+              {% set r = [{'name': q, 'artist': ''}] %}
+            {% endif %}
+            {{ r }}
+          first: "{{ readings[0] }}"
+          second: "{{ readings[1] if readings | count > 1 else readings[0] }}"
+
+      - if: "{{ spoken_area and area_players | count == 0 }}"
+        then:
+          - variables:
+              result:
+                speech: "I don't know of a Music Assistant speaker in the {{ spoken_area }}."
+          - stop: no player in area
+            response_variable: result
+
+      # Two library searches (the second repeats the first when there is only one
+      # reading). Local library searches are fast; this avoids loop-scoping quirks.
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(player) }}"
+          name: "{{ first.name }}"
+          media_type: "{{ [kind] }}"
+          limit: 25
+          library_only: true
+        response_variable: found_first
+        continue_on_error: true
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(player) }}"
+          name: "{{ second.name }}"
+          media_type: "{{ [kind] }}"
+          limit: 25
+          library_only: true
+        response_variable: found_second
+        continue_on_error: true
+
+      - variables:
+          best: >-
+            {% set ns = namespace(best=none) %}
+            {% set searches = [(first, found_first | default({})), (second, found_second | default({}))] %}
+            {% for reading, found in searches %}
+              {% for item in (found or {}).get(kind ~ 's', []) %}
+                {% if ns.best is none %}
+                  {% set names = item.artists | default([]) | map(attribute='name') | map('lower') | join(' | ') %}
+                  {% if not reading.artist or reading.artist | lower in names %}
+                    {% set ns.best = item %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.best }}
+          best_artist: >-
+            {% if best and best.artists is defined and best.artists %}{{ best.artists[0].name }}{% endif %}
+          description: >-
+            {% if best_artist and kind in ['track', 'album'] %}{{ best.name }} by {{ best_artist }}{% elif best %}{{ best.name }}{% endif %}
+
+      - if: "{{ not best }}"
+        then:
+          - variables:
+              result:
+                speech: >-
+                  Sorry, I couldn't find {{ 'the ' ~ kind ~ ' ' if kind != 'track' else '' }}{{ q }}{{ ' by ' ~ by if by else '' }} in your library.
+          - stop: not found
+            response_variable: result
+
+      - action: music_assistant.play_media
+        target:
+          entity_id: "{{ player }}"
+        data:
+          media_id: "{{ best.uri }}"
+          media_type: "{{ kind }}"
+          enqueue: replace
+          radio_mode: "{{ is_radio }}"
+
+      - variables:
+          result:
+            speech: >-
+              {{ 'Playing music like ' if is_radio else 'Playing ' }}{{ description }}{{ ' in the ' ~ spoken_area if spoken_area else '' }}.
+      - stop: done
+        response_variable: result
