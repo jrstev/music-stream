@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Generate "Hey Google" voice commands for a self-hosted music library.
+
+Google Home can't use a self-hosted server as a music provider (see
+docs/landscape.md), but it CAN run a routine with a custom starter phrase that
+activates a Home Assistant script (HA exposes scripts to Google as scenes).
+This tool builds those pairs for every playlist on your Navidrome/Subsonic
+server (plus any extra artists you name):
+
+  out/ha_scripts.yaml           -> Home Assistant scripts that call Music Assistant
+  out/google_home_routines.yaml -> paste into the Google Home script editor
+                                   (home.google.com -> Automations -> Add new)
+
+Stdlib only. Example:
+
+  SUBSONIC_URL=http://nas:4533 SUBSONIC_USER=me SUBSONIC_PASSWORD=... \\
+  python3 tools/gen_voice_routines.py \\
+      --speaker kitchen=media_player.kitchen_speaker \\
+      --speaker "living room=media_player.living_room_speaker" \\
+      --default-speaker kitchen \\
+      --artist "Boards of Canada"
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets
+import sys
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULT_PHRASE = "play my {name} {kind}"
+DEFAULT_ROOM_PHRASE = "play my {name} {kind} in the {room}"
+
+
+@dataclass(frozen=True)
+class MediaItem:
+    name: str
+    media_type: str  # "playlist" | "artist" | "album" | "radio"
+
+
+@dataclass(frozen=True)
+class Speaker:
+    room: str
+    entity_id: str
+
+
+@dataclass(frozen=True)
+class Command:
+    script_id: str
+    alias: str
+    phrase: str
+    item: MediaItem
+    speaker: Speaker
+
+
+# --------------------------------------------------------------------------- #
+# Subsonic
+# --------------------------------------------------------------------------- #
+def fetch_playlists(base_url: str, user: str, password: str) -> list[str]:
+    """Return playlist names via the Subsonic API (token auth)."""
+    salt = secrets.token_hex(6)
+    params = {
+        "u": user,
+        "t": hashlib.md5((password + salt).encode()).hexdigest(),
+        "s": salt,
+        "v": "1.16.1",
+        "c": "music-stream",
+        "f": "json",
+    }
+    url = f"{base_url.rstrip('/')}/rest/getPlaylists?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=20) as resp:
+        payload = json.load(resp)
+    return parse_playlists(payload)
+
+
+def parse_playlists(payload: dict) -> list[str]:
+    body = payload.get("subsonic-response", {})
+    if body.get("status") != "ok":
+        err = body.get("error", {})
+        raise RuntimeError(f"Subsonic error {err.get('code')}: {err.get('message')}")
+    playlists = body.get("playlists", {}).get("playlist", [])
+    return [p["name"] for p in playlists if p.get("name")]
+
+
+# --------------------------------------------------------------------------- #
+# Building commands
+# --------------------------------------------------------------------------- #
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "item"
+
+
+def spoken(text: str) -> str:
+    """Make a name easier for speech recognition to match ("Chill/Focus #2" -> "chill focus 2")."""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", " ", text)).strip().lower()
+
+
+def build_commands(
+    items: list[MediaItem],
+    speakers: list[Speaker],
+    default_room: str | None,
+    phrase: str = DEFAULT_PHRASE,
+    room_phrase: str = DEFAULT_ROOM_PHRASE,
+) -> list[Command]:
+    commands: list[Command] = []
+    seen_ids: set[str] = set()
+    seen_phrases: set[str] = set()
+    multi_room = len(speakers) > 1
+
+    for item in items:
+        for spk in speakers:
+            base = f"music_{item.media_type}_{slugify(item.name)}_{slugify(spk.room)}"
+            script_id, n = base, 2
+            while script_id in seen_ids:
+                script_id, n = f"{base}_{n}", n + 1
+            seen_ids.add(script_id)
+            alias = f"Play {item.name} ({spk.room})"
+
+            templates = []
+            if multi_room:
+                templates.append(room_phrase)
+            if not multi_room or spk.room == default_room:
+                templates.append(phrase)
+            for template in templates:
+                text = template.format(name=spoken(item.name), kind=item.media_type, room=spk.room)
+                if text not in seen_phrases:
+                    seen_phrases.add(text)
+                    commands.append(Command(script_id, alias, text, item, spk))
+    return commands
+
+
+# --------------------------------------------------------------------------- #
+# Rendering (JSON strings are valid YAML double-quoted scalars)
+# --------------------------------------------------------------------------- #
+def q(s: str) -> str:
+    return json.dumps(s, ensure_ascii=False)
+
+
+def render_ha_scripts(commands: list[Command]) -> str:
+    out = [
+        "# Generated by tools/gen_voice_routines.py -- add to configuration.yaml with:",
+        "#   script: !include ha_scripts.yaml",
+        "# (or merge into an existing scripts.yaml). Then expose these scripts to",
+        "# Google Assistant (Settings -> Voice assistants -> Expose).",
+        "",
+    ]
+    done: set[str] = set()
+    for c in commands:
+        if c.script_id in done:
+            continue
+        done.add(c.script_id)
+        out += [
+            f"{c.script_id}:",
+            f"  alias: {q(c.alias)}",
+            "  icon: mdi:music",
+            "  mode: restart",
+            "  sequence:",
+            "    - action: music_assistant.play_media",
+            "      target:",
+            f"        entity_id: {c.speaker.entity_id}",
+            "      data:",
+            f"        media_id: {q(c.item.name)}",
+            f"        media_type: {c.item.media_type}",
+            "        enqueue: replace",
+            "",
+        ]
+    return "\n".join(out)
+
+
+def render_google_routines(commands: list[Command], device_suffix: str = "") -> str:
+    out = [
+        "# Generated by tools/gen_voice_routines.py",
+        "# Paste into the Google Home script editor (home.google.com -> Automations).",
+        "# If validation complains about a device name, use the editor's autocomplete:",
+        "# HA scripts appear as scenes, sometimes as \"<name> - <room/home>\" (see --device-suffix).",
+        "metadata:",
+        "  name: Self-hosted music voice commands",
+        "  description: Starter phrases that trigger Home Assistant / Music Assistant playback.",
+        "",
+        "automations:",
+    ]
+    for c in commands:
+        out += [
+            "  - starters:",
+            "      - type: assistant.event.OkGoogle",
+            "        eventData: query",
+            f"        is: {q(c.phrase)}",
+            "    actions:",
+            "      - type: device.command.ActivateScene",
+            "        activate: true",
+            f"        devices: {q(c.alias + device_suffix)}",
+        ]
+    return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def parse_speaker(raw: str) -> Speaker:
+    room, sep, entity = raw.partition("=")
+    if not sep or not entity.startswith("media_player."):
+        raise argparse.ArgumentTypeError(f"expected ROOM=media_player.xxx, got {raw!r}")
+    return Speaker(room.strip().lower(), entity.strip())
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--speaker", action="append", type=parse_speaker, required=True,
+                   help="ROOM=media_player.entity (repeatable)")
+    p.add_argument("--default-speaker", help="room used when no room is spoken (default: first --speaker)")
+    p.add_argument("--artist", action="append", default=[], help="also generate commands for an artist")
+    p.add_argument("--playlist", action="append", default=[], help="add a playlist name manually")
+    p.add_argument("--playlists-json", type=Path, help="read a saved getPlaylists JSON response instead of calling the server")
+    p.add_argument("--no-server", action="store_true", help="don't query the Subsonic server")
+    p.add_argument("--phrase", default=DEFAULT_PHRASE, help=f"default: {DEFAULT_PHRASE!r}")
+    p.add_argument("--room-phrase", default=DEFAULT_ROOM_PHRASE, help=f"default: {DEFAULT_ROOM_PHRASE!r}")
+    p.add_argument("--device-suffix", default="", help='appended to scene names in Google routines, e.g. " - Home"')
+    p.add_argument("--out", type=Path, default=Path("out"))
+    args = p.parse_args(argv)
+
+    playlists: list[str] = list(args.playlist)
+    if args.playlists_json:
+        playlists += parse_playlists(json.loads(args.playlists_json.read_text()))
+    elif not args.no_server:
+        url, user, pw = (os.environ.get(k) for k in ("SUBSONIC_URL", "SUBSONIC_USER", "SUBSONIC_PASSWORD"))
+        if not (url and user and pw):
+            p.error("set SUBSONIC_URL/SUBSONIC_USER/SUBSONIC_PASSWORD, or pass --playlists-json / --no-server")
+        playlists += fetch_playlists(url, user, pw)
+
+    items = [MediaItem(n, "playlist") for n in dict.fromkeys(playlists)]
+    items += [MediaItem(n, "artist") for n in dict.fromkeys(args.artist)]
+    if not items:
+        p.error("nothing to generate: no playlists found and no --artist/--playlist given")
+
+    default_room = (args.default_speaker or args.speaker[0].room).lower()
+    if default_room not in {s.room for s in args.speaker}:
+        p.error(f"--default-speaker {default_room!r} is not one of the --speaker rooms")
+
+    commands = build_commands(items, args.speaker, default_room, args.phrase, args.room_phrase)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "ha_scripts.yaml").write_text(render_ha_scripts(commands))
+    (args.out / "google_home_routines.yaml").write_text(render_google_routines(commands, args.device_suffix))
+    print(f"{len(items)} items -> {len({c.script_id for c in commands})} HA scripts, "
+          f"{len(commands)} voice phrases written to {args.out}/", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

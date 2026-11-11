@@ -1,0 +1,53 @@
+# Home stack: Navidrome (library) + Music Assistant (player hub) + Home Assistant (voice/glue).
+#
+# Music Assistant and Home Assistant use host networking so they can discover
+# Chromecast / Nest speakers over mDNS. Run this on a box on the SAME LAN as the
+# speakers. Navidrome can live elsewhere (e.g. a VPS); if so, delete that
+# service and point Music Assistant's Subsonic provider at its URL.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: "1h"
+      ND_LOGLEVEL: "info"
+      ND_BASEURL: ""
+      ND_ENABLESHARING: "true"
+    volumes:
+      - ./data/navidrome:/data
+      - ${MUSIC_DIR:?set MUSIC_DIR in .env}:/music:ro
+
+  music-assistant:
+    image: ghcr.io/music-assistant/server:latest
+    container_name: music-assistant
+    restart: unless-stopped
+    network_mode: host          # required for Cast/mDNS discovery
+    volumes:
+      - ./data/music-assistant:/data
+      - ${MUSIC_DIR}:/media/music:ro   # optional: also usable as a "Filesystem" provider
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      LOG_LEVEL: info
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/homeassistant:/config
+      - /etc/localtime:/etc/localtime:ro
