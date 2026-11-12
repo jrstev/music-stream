@@ -3,28 +3,32 @@
 # Loaded as a Home Assistant package. configuration.yaml needs:
 #   homeassistant:
 #     packages: !include_dir_named packages
+# Shared matching logic lives in custom_templates/music_voice.jinja.
 #
-# Two scripts do the work. Expose both to Assist (Settings -> Voice assistants
-# -> Expose) and an AI conversation agent (Anthropic, Ollama, ...) can call them
-# as tools:
-#   script.music_play_from_library  search the library, play the best match, report back
-#   script.music_library_search     look things up without playing (for the AI to check spellings etc.)
+# Scripts (expose all three to Assist so an AI agent can call them as tools):
+#   script.music_play_from_library   your library first, then streaming services (e.g. Spotify), never blocked songs
+#   script.music_library_search      look things up without playing
+#   script.music_block_current_song  add what's playing to the blocklist and skip it
+# Automation:
+#   automation.music_skip_blocked_songs  skips blocked songs during albums, playlists, radio, manual play
 #
-# The PlayLocalMusic intent (custom_sentences/en/music.yaml) calls the same
-# play script for fixed phrases, so the non-AI pipeline keeps working.
+# EDIT the values marked "<-- EDIT" below (default speaker, streaming fallback,
+# and the list of speakers the skip automation watches).
 #
-# EDIT `default_player` in music_play_from_library: the speaker used when no
-# area is given (Settings -> Entities, filter by "Music Assistant").
+# Blocklist: a Local To-do list named "Blocked songs" (todo.blocked_songs).
+#   Item title = song title ("*" = every song by that artist); item description = artist (optional).
+#   Tick an item off to unblock it.
 
 script:
   music_play_from_library:
     alias: Play music from library
     description: >-
-      Plays music from the user's own music library on a speaker. Use this for
-      every request to play music. Put only the title in `query` and the artist
-      in `artist`; set `exact` to true when you have already separated them.
-      Returns whether something was found, what is now playing, and close
-      alternatives when nothing matched.
+      Plays music on a speaker. Searches the user's own library first; if it is
+      not there, plays it from a connected streaming service (e.g. Spotify)
+      unless source is "library". Never plays songs on the user's blocklist.
+      Put only the title in `query` and the artist in `artist`; set `exact` to
+      true when you have already separated them. Returns found/blocked, what is
+      playing and from which source, or close alternatives.
     mode: parallel
     icon: mdi:music
     fields:
@@ -67,12 +71,25 @@ script:
         default: false
         selector:
           boolean:
+      source:
+        name: Source
+        description: >-
+          "auto" (default): library first, then streaming services.
+          "library": only the user's library ("from my library").
+          "streaming": skip the library ("on Spotify").
+        default: auto
+        selector:
+          select:
+            options: [auto, library, streaming]
     sequence:
       - variables:
-          default_player: media_player.kitchen_speaker   # <-- EDIT THIS
+          default_player: media_player.kitchen_speaker   # <-- EDIT: speaker used when no area is given
+          allow_streaming: true                          # <-- EDIT: false = never fall back to Spotify etc.
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
           q: "{{ query | default('') | trim }}"
           by: "{{ artist | default('') | trim }}"
           kind: "{{ media_type | default('track', true) }}"
+          src: "{{ source | default('auto', true) }}"
           is_radio: "{{ radio | default(false) | bool }}"
           is_exact: "{{ exact | default(false) | bool }}"
           spoken_area: "{{ area_name(area) if area | default('') and area_name(area) else area | default('') }}"
@@ -101,6 +118,7 @@ script:
             {{ r }}
           first: "{{ readings[0] }}"
           second: "{{ readings[1] if readings | count > 1 else readings[0] }}"
+          request_text: "{{ ('the ' ~ kind ~ ' ' if kind != 'track' else '') ~ q ~ (' by ' ~ by if by else '') }}"
 
       - if: "{{ spoken_area and area_players | count == 0 }}"
         then:
@@ -111,8 +129,19 @@ script:
           - stop: no player in area
             response_variable: result
 
-      # Two library searches (the second repeats the first when there is only
-      # one reading). Local library searches are fast; this avoids loop-scoping quirks.
+      - action: todo.get_items
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          status: needs_action
+        response_variable: blocked_items
+        continue_on_error: true
+      - variables:
+          blocklist: >-
+            {% from 'music_voice.jinja' import blocklist_from_todo %}{{ blocklist_from_todo(blocked_items | default({}), blocklist_entity) }}
+
+      # ---- 1. Your library ---------------------------------------------------
+      # Two searches (the second repeats the first when there is only one reading).
       - action: music_assistant.search
         data:
           config_entry_id: "{{ config_entry_id(player) }}"
@@ -120,7 +149,7 @@ script:
           media_type: "{{ [kind] }}"
           limit: 25
           library_only: true
-        response_variable: found_first
+        response_variable: lib_first
         continue_on_error: true
       - action: music_assistant.search
         data:
@@ -129,76 +158,130 @@ script:
           media_type: "{{ [kind] }}"
           limit: 25
           library_only: true
-        response_variable: found_second
+        response_variable: lib_second
         continue_on_error: true
-
       - variables:
-          best: >-
-            {% set ns = namespace(best=none) %}
-            {% set searches = [(first, found_first | default({})), (second, found_second | default({}))] %}
-            {% for reading, found in searches %}
-              {% for item in (found or {}).get(kind ~ 's', []) %}
-                {% if ns.best is none %}
-                  {% set names = item.artists | default([]) | map(attribute='name') | map('lower') | join(' | ') %}
-                  {% if not reading.artist or reading.artist | lower in names %}
-                    {% set ns.best = item %}
-                  {% endif %}
-                {% endif %}
-              {% endfor %}
-            {% endfor %}
-            {{ ns.best }}
-          best_artist: >-
-            {% if best and best.artists is defined and best.artists %}{{ best.artists[0].name }}{% endif %}
-          description: >-
-            {% if best_artist and kind in ['track', 'album'] %}{{ best.name }} by {{ best_artist }}{% elif best %}{{ best.name }}{% endif %}
-          # Up to 5 near-misses (ignoring the artist filter) for the AI to choose from.
-          alternatives: >-
-            {% set ns = namespace(out=[]) %}
-            {% for found in [found_first | default({}), found_second | default({})] %}
-              {% for item in (found or {}).get(kind ~ 's', [])[:5] %}
-                {% set a = item.artists[0].name if item.artists is defined and item.artists else '' %}
-                {% set entry = {'name': item.name, 'artist': a} %}
-                {% if entry not in ns.out and ns.out | count < 5 %}{% set ns.out = ns.out + [entry] %}{% endif %}
-              {% endfor %}
-            {% endfor %}
-            {{ ns.out }}
+          lib_pick: >-
+            {% from 'music_voice.jinja' import select_best %}{{ select_best([[first, lib_first | default({})], [second, lib_second | default({})]], kind, blocklist) }}
+          lib_best: "{{ lib_pick['item'] if src != 'streaming' else none }}"
+          lib_alternatives: >-
+            {% from 'music_voice.jinja' import alternatives %}{{ alternatives([lib_first | default({}), lib_second | default({})], kind, blocklist) }}
 
-      - if: "{{ not best }}"
+      - if: "{{ lib_best }}"
+        then:
+          - action: music_assistant.play_media
+            target:
+              entity_id: "{{ player }}"
+            data:
+              media_id: "{{ lib_best.uri }}"
+              media_type: "{{ kind }}"
+              enqueue: replace
+              radio_mode: "{{ is_radio }}"
+          - variables:
+              description: >-
+                {% set a = lib_best.artists[0].name if lib_best.artists is defined and lib_best.artists else '' %}{{ lib_best.name ~ (' by ' ~ a if a and kind in ['track', 'album'] else '') }}
+              result:
+                found: true
+                blocked: false
+                source: your library
+                playing: "{{ description }}"
+                player: "{{ player }}"
+                speech: >-
+                  {{ 'Playing music like ' if is_radio else 'Playing ' }}{{ description }}{{ ' in the ' ~ spoken_area if spoken_area else '' }}.
+          - stop: played from library
+            response_variable: result
+
+      # A blocked match never falls back to streaming.
+      - if: "{{ lib_pick['blocked'] > 0 and src != 'streaming' }}"
         then:
           - variables:
               result:
                 found: false
+                blocked: true
+                speech: "{{ request_text | capitalize }} is on your blocked list, so I won't play it."
+          - stop: blocked
+            response_variable: result
+
+      - if: "{{ not allow_streaming or src == 'library' }}"
+        then:
+          - variables:
+              result:
+                found: false
+                blocked: false
+                speech: "Sorry, I couldn't find {{ request_text }} in your library."
+                alternatives: "{{ lib_alternatives }}"
+          - stop: not in library
+            response_variable: result
+
+      # ---- 2. Streaming services (Spotify etc. connected in Music Assistant) ---
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(player) }}"
+          name: "{{ first.name }}"
+          media_type: "{{ [kind] }}"
+          limit: 25
+          library_only: false
+        response_variable: web_first
+        continue_on_error: true
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(player) }}"
+          name: "{{ second.name }}"
+          media_type: "{{ [kind] }}"
+          limit: 25
+          library_only: false
+        response_variable: web_second
+        continue_on_error: true
+      - variables:
+          web_pick: >-
+            {% from 'music_voice.jinja' import select_best %}{{ select_best([[first, web_first | default({})], [second, web_second | default({})]], kind, blocklist) }}
+          web_best: "{{ web_pick['item'] }}"
+
+      - if: "{{ not web_best }}"
+        then:
+          - variables:
+              is_blocked: "{{ web_pick['blocked'] > 0 }}"
+              result:
+                found: false
+                blocked: "{{ is_blocked }}"
                 speech: >-
-                  Sorry, I couldn't find {{ 'the ' ~ kind ~ ' ' if kind != 'track' else '' }}{{ q }}{{ ' by ' ~ by if by else '' }} in your library.
-                alternatives: "{{ alternatives }}"
-          - stop: not found
+                  {% if is_blocked %}{{ request_text | capitalize }} is on your blocked list, so I won't play it.{% else %}Sorry, I couldn't find {{ request_text }} in your library or on your streaming services.{% endif %}
+                alternatives: >-
+                  {% from 'music_voice.jinja' import alternatives %}{{ alternatives([web_first | default({}), web_second | default({})], kind, blocklist) }}
+          - stop: not found anywhere
             response_variable: result
 
       - action: music_assistant.play_media
         target:
           entity_id: "{{ player }}"
         data:
-          media_id: "{{ best.uri }}"
+          media_id: "{{ web_best.uri }}"
           media_type: "{{ kind }}"
           enqueue: replace
           radio_mode: "{{ is_radio }}"
-
       - variables:
+          description: >-
+            {% set a = web_best.artists[0].name if web_best.artists is defined and web_best.artists else '' %}{{ web_best.name ~ (' by ' ~ a if a and kind in ['track', 'album'] else '') }}
+          from_where: >-
+            {% from 'music_voice.jinja' import source_name %}{{ source_name(web_best.uri) }}
           result:
             found: true
+            blocked: false
+            source: "{{ from_where }}"
             playing: "{{ description }}"
             player: "{{ player }}"
             speech: >-
-              {{ 'Playing music like ' if is_radio else 'Playing ' }}{{ description }}{{ ' in the ' ~ spoken_area if spoken_area else '' }}.
-      - stop: done
+              {{ 'Playing music like ' if is_radio else 'Playing ' }}{{ description }}{{ ' from ' ~ from_where if from_where != 'your library' else '' }}{{ ' in the ' ~ spoken_area if spoken_area else '' }}.
+      - stop: played from streaming
         response_variable: result
 
   music_library_search:
     alias: Search music library
     description: >-
-      Searches the user's own music library without playing anything. Use it to
-      check what exists (exact titles, spellings, which albums an artist has)
-      before calling "Play music from library", or after that returned no match.
+      Searches music without playing anything: the user's library, and with
+      include_streaming also connected streaming services. Use it to check exact
+      titles and spellings before calling "Play music from library", or after it
+      returned no match. Blocked songs are left out.
     mode: parallel
     icon: mdi:magnify
     fields:
@@ -214,35 +297,146 @@ script:
         selector:
           select:
             options: [track, album, artist, playlist]
+      include_streaming:
+        name: Include streaming
+        description: Also search streaming services such as Spotify.
+        default: false
+        selector:
+          boolean:
     sequence:
       - variables:
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
           player_for_entry: >-
             {{ integration_entities('music_assistant') | select('match', 'media_player\\.') | first }}
           kinds: "{{ [media_type] if media_type | default('') else ['track', 'album', 'artist', 'playlist'] }}"
+      - action: todo.get_items
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          status: needs_action
+        response_variable: blocked_items
+        continue_on_error: true
       - action: music_assistant.search
         data:
           config_entry_id: "{{ config_entry_id(player_for_entry) }}"
           name: "{{ query }}"
           media_type: "{{ kinds }}"
           limit: 8
-          library_only: true
+          library_only: "{{ not (include_streaming | default(false) | bool) }}"
         response_variable: found
       - variables:
           result: >-
+            {% from 'music_voice.jinja' import is_blocked_todo, source_name %}
             {% set ns = namespace(out={}) %}
             {% for k in kinds %}
               {% set acc = namespace(rows=[]) %}
               {% for item in (found or {}).get(k ~ 's', []) %}
-                {% set row = {'name': item.name} %}
-                {% if item.artists is defined and item.artists %}{% set row = dict(row, artist=item.artists[0].name) %}{% endif %}
-                {% if item.album is defined and item.album %}{% set row = dict(row, album=item.album.name) %}{% endif %}
-                {% set acc.rows = acc.rows + [row] %}
+                {% set arts = (item.artists | default([]) | map(attribute='name') | list) if k != 'artist' else [item.name] %}
+                {% if not is_blocked_todo(blocked_items | default({}), blocklist_entity, item.name if k == 'track' else '', arts) %}
+                  {% set row = {'name': item.name, 'source': source_name(item.uri | default(''))} %}
+                  {% if k != 'artist' and arts %}{% set row = dict(row, artist=arts[0]) %}{% endif %}
+                  {% if item.album is defined and item.album %}{% set row = dict(row, album=item.album.name) %}{% endif %}
+                  {% set acc.rows = acc.rows + [row] %}
+                {% endif %}
               {% endfor %}
               {% set ns.out = dict(ns.out, **{k ~ 's': acc.rows}) %}
             {% endfor %}
             {{ ns.out }}
       - stop: done
         response_variable: result
+
+  music_block_current_song:
+    alias: Block current song
+    description: >-
+      Adds the song currently playing to the user's blocklist so it is never
+      played again, then skips to the next track. Use for "block this song",
+      "never play this again", "I hate this song".
+    mode: queued
+    icon: mdi:music-off
+    fields:
+      area:
+        name: Area
+        description: Room whose speaker is playing the song, only if the user named one.
+        selector:
+          area:
+    sequence:
+      - variables:
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          spoken_area: "{{ area_name(area) if area | default('') and area_name(area) else area | default('') }}"
+          mass_players: "{{ integration_entities('music_assistant') | select('match', 'media_player\\.') | list }}"
+          candidates: >-
+            {% set in_area = area_entities(spoken_area) | select('in', mass_players) | list if spoken_area else mass_players %}
+            {{ in_area | select('is_state', 'playing') | list }}
+          player: "{{ candidates[0] if candidates | count > 0 else '' }}"
+          title: "{{ state_attr(player, 'media_title') if player else '' }}"
+          song_artist: "{{ state_attr(player, 'media_artist') if player else '' }}"
+      - if: "{{ not title }}"
+        then:
+          - variables:
+              result:
+                blocked: false
+                speech: "Nothing seems to be playing{{ ' in the ' ~ spoken_area if spoken_area else '' }}."
+          - stop: nothing playing
+            response_variable: result
+      - action: todo.add_item
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          item: "{{ title }}"
+          description: "{{ song_artist or '' }}"
+      - action: media_player.media_next_track
+        target:
+          entity_id: "{{ player }}"
+        continue_on_error: true
+      - variables:
+          result:
+            blocked: true
+            song: "{{ title }}{{ ' by ' ~ song_artist if song_artist else '' }}"
+            speech: "OK, I've blocked {{ title }}{{ ' by ' ~ song_artist if song_artist else '' }} and skipped it."
+      - stop: done
+        response_variable: result
+
+automation:
+  - id: music_skip_blocked_songs
+    alias: Skip blocked songs
+    description: >-
+      Skips any song on the blocklist that starts playing on a Music Assistant
+      speaker: inside albums, playlists, radio mode, or when started by hand.
+    mode: queued
+    max: 20
+    triggers:
+      - trigger: state
+        entity_id:                                 # <-- EDIT: your Music Assistant speakers (and groups)
+          - media_player.kitchen_speaker
+          - media_player.living_room_speaker
+        attribute: media_title
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.to_state is not none and trigger.to_state.state == 'playing' }}"
+    actions:
+      - variables:
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+      - action: todo.get_items
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          status: needs_action
+        response_variable: blocked_items
+        continue_on_error: true
+      - condition: template
+        value_template: >-
+          {% from 'music_voice.jinja' import is_blocked_todo %}
+          {{ is_blocked_todo(blocked_items | default({}), blocklist_entity,
+                             trigger.to_state.attributes.media_title | default(''),
+                             [trigger.to_state.attributes.media_artist | default('')]) == 'yes' }}
+      - action: media_player.media_next_track
+        target:
+          entity_id: "{{ trigger.entity_id }}"
+      - action: logbook.log
+        data:
+          name: Music blocklist
+          message: "skipped {{ trigger.to_state.attributes.media_title }} by {{ trigger.to_state.attributes.media_artist }}"
+          entity_id: "{{ trigger.entity_id }}"
 
 intent_script:
   # Fixed phrases from custom_sentences/en/music.yaml (non-AI pipeline).
@@ -258,6 +452,18 @@ intent_script:
           area: "{{ area | default('') }}"
           radio: "{{ radio | default('false') == 'true' }}"
           exact: "{{ exact_title | default('false') == 'true' }}"
+          source: "{{ source | default('auto') }}"
         response_variable: played
       - stop: done
         response_variable: played
+
+  BlockCurrentSong:
+    speech:
+      text: "{{ action_response.speech }}"
+    action:
+      - action: script.music_block_current_song
+        data:
+          area: "{{ area | default('') }}"
+        response_variable: done
+      - stop: done
+        response_variable: done

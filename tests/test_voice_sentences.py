@@ -26,19 +26,19 @@ class VoiceSentences(unittest.TestCase):
         # Home Assistant supplies {area} at runtime from your configured areas.
         cls.slot_lists = {"area": TextSlotList.from_strings(["kitchen", "living room", "office"])}
 
-    def match(self, text):
+    def match(self, text, intent="PlayLocalMusic"):
         # Same call Home Assistant's default conversation agent makes.
         result = recognize_best(text, self.intents, slot_lists=self.slot_lists,
                                 best_metadata_key="hass_custom_sentence", best_slot_name="name")
         self.assertIsNotNone(result, f"no match for {text!r}")
-        self.assertEqual(result.intent.name, "PlayLocalMusic")
+        self.assertEqual(result.intent.name, intent, text)
         return {k: str(v.value).strip() for k, v in result.entities.items()}
 
     def check(self, text, **expected):
         got = self.match(text)
         for key, value in expected.items():
             self.assertEqual(got.get(key), value, f"{text!r}: {key} -> {got}")
-        for key in {"artist", "area", "radio"} - expected.keys():
+        for key in {"artist", "area", "radio", "source"} - expected.keys():
             self.assertNotIn(key, got, f"{text!r}: unexpected {key} -> {got}")
 
     def test_track_by_artist(self):
@@ -84,9 +84,35 @@ class VoiceSentences(unittest.TestCase):
     def test_radio_mode(self):
         self.check("play something like bonobo", query="bonobo", media_type="artist", radio="true")
 
+    # --- source: library only / straight to Spotify ---------------------------
+    def test_from_my_library(self):
+        self.check("play teardrop by massive attack from my library",
+                   query="teardrop", artist="massive attack", media_type="track", source="library")
+
+    def test_on_spotify(self):
+        self.check("play nightcall by kavinsky on spotify",
+                   query="nightcall", artist="kavinsky", media_type="track", source="streaming")
+
+    def test_area_and_source(self):
+        self.check("play the album kid a in the kitchen from spotify",
+                   query="kid a", area="kitchen", media_type="album", source="streaming")
+
+    def test_spotify_not_mistaken_for_area(self):
+        self.check("play music by radiohead on spotify",
+                   query="radiohead", media_type="artist", source="streaming")
+
+    # --- blocklist --------------------------------------------------------------
+    def test_block_current_song(self):
+        for text in ["block this song", "never play this song again", "add this track to my blocklist"]:
+            self.match(text, intent="BlockCurrentSong")
+        self.assertEqual(self.match("block this song in the office", intent="BlockCurrentSong")["area"],
+                         "office")
+
     def test_package_is_valid_yaml(self):
         pkg = yaml.safe_load(PACKAGE.read_text())
-        self.assertIn("PlayLocalMusic", pkg["intent_script"])
+        self.assertEqual(set(pkg["intent_script"]), {"PlayLocalMusic", "BlockCurrentSong"})
+        self.assertEqual(set(pkg["script"]),
+                         {"music_play_from_library", "music_library_search", "music_block_current_song"})
 
 
 if __name__ == "__main__":

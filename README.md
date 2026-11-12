@@ -8,6 +8,7 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
 - **You don't need to build the streaming part.** Existing open-source tools already do it well. Nest speakers are Cast receivers, and **Music Assistant** can push your library to them (including speaker groups).
 - **The missing piece is voice.** Google won't send "play X" to you, so this repo covers two routes:
   - **Any song, any artist:** Home Assistant **Assist**, fully local. "Okay Nabu, play Teardrop by Massive Attack in the living room" searches your library and plays it on the Nest speaker. See [`docs/voice-assist.md`](docs/voice-assist.md).
+  - **Spotify fallback and blocklist:** anything not in your library plays automatically from Spotify (or another service connected in Music Assistant). Songs and artists on your blocklist are never played. See [`docs/voice-assist.md`](docs/voice-assist.md#spotify-fallback-and-blocklist).
   - **Natural requests with AI:** put Claude (cloud) or an Ollama model (local) in front, so "play the song from Drive" or "something mellow for cooking" works too. See [`docs/ai-assist.md`](docs/ai-assist.md).
   - **"Hey Google" for favorites:** Google Home routines with fixed phrases that trigger Home Assistant scripts, generated from your playlists (below).
 

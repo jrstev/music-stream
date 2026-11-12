@@ -54,6 +54,7 @@ services:
       # Assist voice config from this repo (see docs/voice-assist.md)
       - ./homeassistant/custom_sentences:/config/custom_sentences:ro
       - ./homeassistant/packages:/config/packages:ro
+      - ./homeassistant/custom_templates:/config/custom_templates:ro
 
   # --- Local voice pipeline for Assist (Wyoming protocol) ----------------------
   # Add each in HA: Settings -> Devices & services -> Add -> Wyoming Protocol,

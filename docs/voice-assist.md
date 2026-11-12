@@ -31,6 +31,10 @@ Speech recognition, intent matching and the spoken replies all run locally, with
 
 Add "**in the kitchen**" or "**on the office**" to any of these to choose the speaker. Without an area, the default player is used.
 
+**Your library first, then Spotify.** If a request isn't in your library, it plays automatically from a streaming service connected in Music Assistant (see [Spotify fallback](#spotify-fallback-and-blocklist)), and the reply says so: "Playing Nightcall by Kavinsky from Spotify." Add "**from my library**" to stay in your library, or "**on Spotify**" to skip it.
+
+**"Block this song"** (or "never play this song again") adds what's playing to your blocklist and skips it.
+
 Titles that contain "by" (e.g. "Stand by Me") usually work even without "called". The intent searches both readings ("stand" by "me", and the full title "stand by me") and only accepts a result whose artist actually matches.
 
 ## Setup
@@ -45,12 +49,17 @@ Starting from the stack in `deploy/` (see the main README):
    ```
    The first start downloads the models (a few hundred MB for `small-int8`).
 
-2. **Load this repo's HA config.** The compose file already mounts `homeassistant/custom_sentences` and `homeassistant/packages` into `/config`. Add this to `deploy/data/homeassistant/configuration.yaml`:
+2. **Load this repo's HA config.** The compose file already mounts `homeassistant/custom_sentences`, `homeassistant/packages` and `homeassistant/custom_templates` into `/config`. Add this to `deploy/data/homeassistant/configuration.yaml`:
    ```yaml
    homeassistant:
      packages: !include_dir_named packages
    ```
-   Edit `default_player` in `deploy/homeassistant/packages/music_voice.yaml` to your main speaker's Music Assistant entity, then restart Home Assistant.
+   In `deploy/homeassistant/packages/music_voice.yaml`, edit the lines marked `<-- EDIT`:
+   - `default_player`: your main speaker's Music Assistant entity
+   - `allow_streaming`: set to `false` to turn off the Spotify fallback
+   - the skip automation's speaker list: every Music Assistant speaker and group that should honour the blocklist
+   
+   Then create the blocklist (see below) and restart Home Assistant.
 
 3. **Connect the speech engines.** Go to Settings → Devices & services → Add integration → **Wyoming Protocol**:
    - host `127.0.0.1`, port `10300` (whisper)
@@ -73,6 +82,33 @@ Starting from the stack in `deploy/` (see the main README):
 
 7. **Test without a microphone.** Open Assist in the HA web UI (the speech-bubble icon) and type `play teardrop by massive attack`. Settings → Voice assistants → ⋮ → *Debug* shows the matched sentence, the slots and each step.
 
+## Spotify fallback and blocklist
+
+### Streaming fallback
+1. In Music Assistant → Settings → Providers, add **Spotify**. A Premium account is required. YouTube Music, Tidal, Qobuz, Deezer and others work the same way.
+2. That's it. When a search finds nothing in your library, `script.music_play_from_library` searches your connected services and plays the best match, with the same artist check.
+   - Your library always wins when it has the song.
+   - "from my library" disables the fallback for one request; `allow_streaming: false` disables it entirely.
+
+### Blocklist
+Blocked songs are never played: not from your library, not from Spotify, and not when they come up inside an album, playlist or radio mode.
+
+1. **Create the list:** Settings → Devices & services → Add integration → **Local To-do**, named **Blocked songs**. This creates `todo.blocked_songs`.
+2. **Add entries** in the HA app's To-do lists, or say "block this song" while it plays:
+
+   | Item | Description | Blocks |
+   |---|---|---|
+   | `Teardrop` | `Massive Attack` | that song by that artist (any version: "Teardrop - Remastered", "Teardrop (Live)", …) |
+   | `Wonderwall` | *(empty)* | that title by any artist |
+   | `*` | `Nickelback` | everything by that artist, including "play music by Nickelback" |
+
+   Matching ignores case, punctuation, and "(…)" / "[…]" / " - …" suffixes.
+3. **Unblock** by ticking the item off, or deleting it.
+
+How it's enforced:
+- **Requests:** the play script and the search tool skip blocked results. A request that matches a blocked song gets "… is on your blocked list" and is never retried on Spotify.
+- **During playback:** `automation.music_skip_blocked_songs` watches the speakers you listed. When a blocked song starts, it skips to the next track and writes a logbook entry. Expect a second or two of the song before it's skipped.
+
 ## Optional: let an AI interpret requests
 
 For requests like "play the song from Drive" or "something mellow for cooking", put an AI model (Anthropic Claude in the cloud, or Ollama locally) in front of the same scripts. See [ai-assist.md](ai-assist.md).
@@ -90,6 +126,6 @@ For requests like "play the song from Drive" or "something mellow for cooking", 
 
 The sentence matching and the result-selection logic are unit-tested:
 - `tests/test_voice_sentences.py` runs the phrases through hassil, the matcher HA itself uses.
-- `tests/test_music_voice_templates.py` renders the scripts' Jinja templates against fake search results.
+- `tests/test_music_voice_templates.py` renders the scripts' templates and the shared `custom_templates/music_voice.jinja` macros against fake search results and to-do lists. That covers library-first ordering, the Spotify fallback, and blocklist matching.
 
 The Home Assistant side (the `music_assistant.search` response shape, `config_entry_id()`, area lookup) has not been run against a live install yet. If something misbehaves, the Assist debug view shows which step failed.
