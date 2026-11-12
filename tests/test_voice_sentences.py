@@ -3,11 +3,15 @@
 Skipped unless `hassil` and `pyyaml` are installed:
     pip install hassil pyyaml
 """
+import sys
 import unittest
 from pathlib import Path
 
 try:
     import yaml
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ha_yaml
     from hassil import Intents, recognize_best
     from hassil.intents import TextSlotList
 except ImportError:  # pragma: no cover
@@ -135,7 +139,7 @@ class VoiceSentences(unittest.TestCase):
         self.assertEqual((got["query"], got["media_type"]), ("baby shark", "any"))
 
     def test_package_is_valid_yaml(self):
-        pkg = yaml.safe_load(PACKAGE.read_text())
+        pkg = ha_yaml.load(PACKAGE)
         self.assertEqual(set(pkg["intent_script"]),
                          {"PlayLocalMusic", "BlockCurrentSong", "BlockSong", "UnblockSong"})
         self.assertEqual(set(pkg["script"]),

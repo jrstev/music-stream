@@ -35,7 +35,7 @@ Lyrics also make clean songs fast. When a song's lyrics contain none of your wor
 
 ## Setup
 
-1. **Put both folders under one parent** on the same disk. The cleaner mounts the parent so it can hardlink unchanged songs; hardlinks don't work across mounts or disks. In `deploy/.env`:
+1. **Put both folders under one parent** on the same disk. The cleaner mounts the parent so it can hardlink unchanged songs; hardlinks don't work across mounts or disks. In the `.env` next to the compose file (`deploy/server/.env` on the Green layout):
    ```sh
    MEDIA_ROOT=/srv            # contains your music folder
    MUSIC_SUBDIR=music         # /srv/music  (originals)
@@ -50,11 +50,11 @@ Lyrics also make clean songs fast. When a song's lyrics contain none of your wor
    If the file has no words, music-profanity-filter's built-in list is used.
 3. **Try a dry run first.** It analyses and logs, but writes nothing to the clean folder:
    ```sh
-   cd deploy
+   cd deploy/server      # or deploy/ for the all-in-one layout
    docker compose --profile cleaner build cleaner
    docker compose --profile cleaner run --rm cleaner --dry-run --once
    ```
-   Then read `deploy/data/cleaner/review-dry-run.csv`: one row per word to be muted, with timestamp, what was heard, and confidence.
+   Then read `data/cleaner/review-dry-run.csv` (next to the compose file): one row per word to be muted, with timestamp, what was heard, and confidence.
 4. **Run it for real** as a background service that re-scans every 6 hours (`CLEANER_INTERVAL`, in seconds):
    ```sh
    docker compose --profile cleaner up -d cleaner
@@ -67,7 +67,7 @@ Lyrics also make clean songs fast. When a song's lyrics contain none of your wor
 - **New music:** picked up on the next pass. Only new or changed files are processed.
 - **Editing the word list:** the next pass re-checks every song using **cached transcripts**, so no re-transcription is needed. Only songs whose edits actually changed get re-rendered. Removing a word turns affected songs back into links to the originals.
 - **Deleted originals:** removed from the clean copy (`PRUNE=true`).
-- **Review:** `deploy/data/cleaner/review.csv` logs every muted word (song, start/end time, list word, what was heard, confidence, lyrics source). `last_run.json` has the counts from the latest pass, including failures with their error messages.
+- **Review:** `data/cleaner/review.csv` (next to the compose file) logs every muted word (song, start/end time, list word, what was heard, confidence, lyrics source). `last_run.json` has the counts from the latest pass, including failures with their error messages.
 - **A song was muted wrongly or missed a word:** check its row in `review.csv`. The usual fix is adding a lyrics file next to the song (`Song.lrc` or `Song.txt`) and touching the song file (`touch "Song.mp3"`) so it's re-analysed on the next pass.
 
 ## Settings

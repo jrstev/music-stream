@@ -10,6 +10,7 @@ Skipped unless `jinja2` and `pyyaml` are installed.
 """
 import ast
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,9 @@ try:
     import jinja2
     import jinja2.sandbox
     import yaml
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ha_yaml
 except ImportError:  # pragma: no cover
     jinja2 = None
 
@@ -66,7 +70,7 @@ class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = make_env()
-        pkg = yaml.safe_load(PACKAGE.read_text())
+        pkg = ha_yaml.load(PACKAGE)
         cls.play = pkg["script"]["music_play_from_library"]["sequence"]
         cls.search = pkg["script"]["music_library_search"]["sequence"]
 
@@ -186,7 +190,7 @@ class BlockScripts(Base):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        pkg = yaml.safe_load(PACKAGE.read_text())
+        pkg = ha_yaml.load(PACKAGE)
         cls.block = pkg["script"]["music_block_song"]["sequence"]
         cls.unblock_steps = pkg["script"]["music_unblock_song"]["sequence"]
 

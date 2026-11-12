@@ -14,8 +14,13 @@
 # Automation:
 #   automation.music_skip_blocked_songs  skips blocked songs during albums, playlists, radio, manual play
 #
-# EDIT the values marked "<-- EDIT" below (default speaker, streaming fallback,
-# and the list of speakers the skip automation watches).
+# Per-home settings live in Home Assistant's secrets.yaml (never overwritten when
+# this package is synced; see scripts/sync-ha-config.sh and docs/setup-green.md):
+#   music_default_player: media_player.kitchen_speaker      # speaker used when no room is named
+#   music_allow_streaming: true                             # false = never fall back to Spotify etc.
+#   music_speakers:                                         # speakers the skip automation watches
+#     - media_player.kitchen_speaker
+#     - media_player.living_room_speaker
 #
 # Blocklist: a Local To-do list named "Blocked songs" (todo.blocked_songs).
 #   Item title = song title ("*" = every song by that artist); item description = artist (optional).
@@ -85,9 +90,9 @@ script:
             options: [auto, library, streaming]
     sequence:
       - variables:
-          default_player: media_player.kitchen_speaker   # <-- EDIT: speaker used when no area is given
-          allow_streaming: true                          # <-- EDIT: false = never fall back to Spotify etc.
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          default_player: !secret music_default_player   # speaker used when no area is given
+          allow_streaming: !secret music_allow_streaming # false = never fall back to Spotify etc.
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
           q: "{{ query | default('') | trim }}"
           by: "{{ artist | default('') | trim }}"
           kind: "{{ media_type | default('track', true) }}"
@@ -293,7 +298,7 @@ script:
           boolean:
     sequence:
       - variables:
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
           player_for_entry: >-
             {{ integration_entities('music_assistant') | select('match', 'media_player\\.') | first }}
           kinds: "{{ [media_type] if media_type | default('') else ['track', 'album', 'artist', 'playlist'] }}"
@@ -349,7 +354,7 @@ script:
           area:
     sequence:
       - variables:
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
           spoken_area: "{{ area_name(area) if area | default('') and area_name(area) else area | default('') }}"
           mass_players: "{{ integration_entities('music_assistant') | select('match', 'media_player\\.') | list }}"
           candidates: >-
@@ -425,7 +430,7 @@ script:
           boolean:
     sequence:
       - variables:
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
           q: "{{ query | default('') | trim }}"
           by: "{{ artist | default('') | trim }}"
           kind: "{{ media_type | default('any', true) }}"
@@ -568,7 +573,7 @@ script:
             options: [any, track, artist]
     sequence:
       - variables:
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
           q: "{{ query | default('') | trim }}"
           by: "{{ artist | default('') | trim }}"
           kind: "{{ media_type | default('any', true) }}"
@@ -617,16 +622,14 @@ automation:
     max: 20
     triggers:
       - trigger: state
-        entity_id:                                 # <-- EDIT: your Music Assistant speakers (and groups)
-          - media_player.kitchen_speaker
-          - media_player.living_room_speaker
+        entity_id: !secret music_speakers          # your Music Assistant speakers (and groups)
         attribute: media_title
     conditions:
       - condition: template
         value_template: "{{ trigger.to_state is not none and trigger.to_state.state == 'playing' }}"
     actions:
       - variables:
-          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          blocklist_entity: todo.blocked_songs           # the Local To-do list named "Blocked songs"
       - action: todo.get_items
         target:
           entity_id: "{{ blocklist_entity }}"

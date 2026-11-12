@@ -43,7 +43,7 @@ Any Home Assistant conversation integration that supports tool calling ("Control
 - Free and private. Needs a decent machine: a GPU makes it comfortable, while CPU-only works but adds several seconds per reply.
 - Start it with:
   ```sh
-  cd deploy
+  cd deploy/server      # or deploy/ for the all-in-one layout
   docker compose --profile ai-local up -d ollama
   docker exec ollama ollama pull qwen3:8b
   ```
@@ -56,7 +56,7 @@ Do the [voice-assist.md](voice-assist.md) setup first (stack, whisper/piper, pac
 
 1. **Add the integration.** Go to Settings → Devices & services → Add integration:
    - **Anthropic**: paste the API key, then set the model in its options.
-   - **Ollama**: URL `http://127.0.0.1:11434`, model `qwen3:8b`.
+   - **Ollama**: URL `http://<server-ip>:11434` (`http://127.0.0.1:11434` in the all-in-one layout), model `qwen3:8b`.
 2. **Expose the music tools.** Settings → Voice assistants → *Expose* tab → add:
    - `script.music_play_from_library`
    - `script.music_library_search`

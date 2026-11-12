@@ -43,6 +43,8 @@ Titles that contain "by" (e.g. "Stand by Me") usually work even without "called"
 
 ## Setup
 
+**Using a Home Assistant Green?** Follow [setup-green.md](setup-green.md) instead: it covers the same steps with whisper/piper on a separate server. The steps below are for the all-in-one Docker layout (`deploy/docker-compose.yml`).
+
 Starting from the stack in `deploy/` (see the main README):
 
 1. **Start the voice services**
@@ -58,15 +60,18 @@ Starting from the stack in `deploy/` (see the main README):
    homeassistant:
      packages: !include_dir_named packages
    ```
-   In `deploy/homeassistant/packages/music_voice.yaml`, edit the lines marked `<-- EDIT`:
-   - `default_player`: your main speaker's Music Assistant entity
-   - `allow_streaming`: set to `false` to turn off the Spotify fallback
-   - the skip automation's speaker list: every Music Assistant speaker and group that should honour the blocklist
-   
-   Then create the blocklist (see below) and restart Home Assistant.
+   Then add your per-home settings to `deploy/data/homeassistant/secrets.yaml`:
+   ```yaml
+   music_default_player: media_player.kitchen_speaker   # speaker used when you don't name a room
+   music_allow_streaming: true                          # false = never fall back to Spotify
+   music_speakers:                                      # speakers the blocklist automation watches
+     - media_player.kitchen_speaker
+     - media_player.living_room_speaker
+   ```
+   Find the entity ids under Settings → Entities, filtered by "Music Assistant". Create the blocklist (see below), then restart Home Assistant.
 
 3. **Connect the speech engines.** Go to Settings → Devices & services → Add integration → **Wyoming Protocol**:
-   - host `127.0.0.1`, port `10300` (whisper)
+   - host `127.0.0.1`, port `10300` (whisper). On the Green layout, use the server's IP.
    - again with port `10200` (piper)
    - port `10400` too, if you started openwakeword
 

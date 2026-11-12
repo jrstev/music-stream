@@ -18,7 +18,7 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
 ```
  ┌──────────────┐   Subsonic API    ┌───────────────────┐    Cast (LAN)    ┌──────────────┐
  │  Navidrome   │ ◄──────────────── │  Music Assistant  │ ───────────────► │ Nest/Google  │
- │ (home or VPS)│                   │   (on the LAN)    │                  │   speakers   │
+ │ (PC / NAS)   │                   │ (HA Green add-on) │                  │   speakers   │
  └──────────────┘                   └─────────▲─────────┘                  └──────┬───────┘
                                               │ music_assistant.play_media        │ "Hey Google, play
                                     ┌─────────┴─────────┐   scene activate        │  my jazz playlist"
@@ -29,11 +29,22 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
 
 ## Setup
 
+Pick a layout:
+
+| Layout | Runs where | Guide |
+|---|---|---|
+| **Home Assistant Green + home server** (recommended) | Green: Home Assistant + Music Assistant add-on. PC/NAS: Navidrome, whisper/piper, optional cleaner and AI (`deploy/server/`) | [`docs/setup-green.md`](docs/setup-green.md) |
+| All-in-one | One Docker host on the speakers' network runs everything, including Home Assistant (`deploy/docker-compose.yml`) | steps below |
+
+Either way, Music Assistant and Home Assistant must be on the same network as the Nest speakers. On the Green layout, copy the voice config to the Green with `scripts/sync-ha-config.sh`; per-home settings live in the Green's `secrets.yaml`, so re-syncing never overwrites them.
+
+All-in-one:
+
 1. **Run the stack** on a machine on the same LAN as the speakers:
    ```sh
    cd deploy && cp .env.example .env && $EDITOR .env && docker compose up -d
    ```
-   Navidrome runs on `:4533`, Music Assistant on `:8095`, and Home Assistant on `:8123`. If your library lives on a VPS, run Navidrome there behind HTTPS or Tailscale, and drop it from the compose file.
+   Navidrome runs on `:4533`, Music Assistant on `:8095`, and Home Assistant on `:8123`.
 2. **Music Assistant:** add the *Subsonic* (Navidrome) music provider and the *Google Cast* player provider. Check that you can play to a Nest speaker from the MA UI.
 3. **Home Assistant:** add the *Music Assistant* integration. Then connect HA to Google: either Nabu Casa Cloud (easiest) or the free [manual Google Assistant integration](https://www.home-assistant.io/integrations/google_assistant/). Make sure `script` entities are exposed.
 4. **Generate voice commands:**
@@ -62,6 +73,6 @@ Re-run step 4 whenever you add playlists. You can change the phrasing with `--ph
 ## Development
 
 ```sh
-pip install hassil jinja2 pyyaml mutagen   # optional: enables the Assist and cleaner tests (cleaner tests also need ffmpeg)
+pip install hassil jinja2 pyyaml mutagen   # optional: enables the Assist, sync and cleaner tests (cleaner tests also need ffmpeg)
 python3 -m unittest discover -s tests
 ```

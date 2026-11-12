@@ -1,4 +1,7 @@
-# Home stack: Navidrome (library) + Music Assistant (player hub) + Home Assistant (voice/glue).
+# ALL-IN-ONE layout: everything on one Docker host, including Home Assistant.
+# Using a Home Assistant Green? Use deploy/server/ instead (docs/setup-green.md).
+#
+# Navidrome (library) + Music Assistant (player hub) + Home Assistant (voice/glue).
 #
 # Music Assistant and Home Assistant use host networking so they can discover
 # Chromecast / Nest speakers over mDNS. Run this on a box on the SAME LAN as the

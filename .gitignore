@@ -2,3 +2,5 @@ out/
 __pycache__/
 deploy/.env
 deploy/data/
+deploy/server/.env
+deploy/server/data/
