@@ -1,0 +1,154 @@
+# ALL-IN-ONE layout: everything on one Docker host, including Home Assistant.
+# Using a Home Assistant Green? Use deploy/server/ instead (docs/setup-green.md).
+#
+# Navidrome (library) + Music Assistant (player hub) + Home Assistant (voice/glue).
+#
+# Music Assistant and Home Assistant use host networking so they can discover
+# Chromecast / Nest speakers over mDNS. Run this on a box on the SAME LAN as the
+# speakers. Navidrome can live elsewhere (e.g. a VPS); if so, delete that
+# service and point Music Assistant's Subsonic provider at its URL.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: "1h"
+      ND_LOGLEVEL: "info"
+      ND_BASEURL: ""
+      ND_ENABLESHARING: "true"
+    volumes:
+      - ./data/navidrome:/data
+      # Serve the clean copy instead: set NAVIDROME_MUSIC_DIR to the clean folder (docs/clean-library.md)
+      - ${NAVIDROME_MUSIC_DIR:-${MUSIC_DIR:?set MUSIC_DIR in .env}}:/music:ro
+
+  music-assistant:
+    image: ghcr.io/music-assistant/server:latest
+    container_name: music-assistant
+    restart: unless-stopped
+    network_mode: host          # required for Cast/mDNS discovery
+    volumes:
+      - ./data/music-assistant:/data
+      - ${MUSIC_DIR}:/media/music:ro   # optional: also usable as a "Filesystem" provider
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      LOG_LEVEL: info
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/homeassistant:/config
+      - /etc/localtime:/etc/localtime:ro
+      # Assist voice config from this repo (see docs/voice-assist.md)
+      - ./homeassistant/custom_sentences:/config/custom_sentences:ro
+      - ./homeassistant/packages:/config/packages:ro
+      - ./homeassistant/custom_templates:/config/custom_templates:ro
+
+  # --- Local voice pipeline for Assist (Wyoming protocol) ----------------------
+  # Add each in HA: Settings -> Devices & services -> Add -> Wyoming Protocol,
+  # host = 127.0.0.1 (HA uses host networking, so the published
+  # ports are reachable on localhost), port as below.
+
+  whisper:            # speech-to-text
+    image: rhasspy/wyoming-whisper:latest
+    container_name: whisper
+    restart: unless-stopped
+    # small-int8 is generally more accurate on song/artist names than tiny/base, at more CPU.
+    # On a Raspberry Pi use base-int8; with a GPU see the wyoming-whisper docs.
+    command: --model ${WHISPER_MODEL:-small-int8} --language ${VOICE_LANGUAGE:-en} --data-dir /data
+    ports:
+      - "10300:10300"
+    volumes:
+      - ./data/whisper:/data
+
+  piper:              # text-to-speech (spoken replies)
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
+    restart: unless-stopped
+    command: --voice ${PIPER_VOICE:-en_US-lessac-medium} --data-dir /data
+    ports:
+      - "10200:10200"
+    volumes:
+      - ./data/piper:/data
+
+  openwakeword:       # only for satellites without on-device wake word (Voice PE doesn't need it)
+    image: rhasspy/wyoming-openwakeword:latest
+    container_name: openwakeword
+    restart: unless-stopped
+    command: --preload-model ok_nabu
+    ports:
+      - "10400:10400"
+    profiles: ["wakeword"]
+
+  # --- Optional local AI model for interpreting requests (docs/ai-assist.md) ---
+  # docker compose --profile ai-local up -d ollama
+  # docker exec ollama ollama pull qwen3:8b
+  # Without a GPU, replies take several seconds; use a cloud model instead if that's too slow.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    profiles: ["ai-local"]
+    # NVIDIA GPU: uncomment (requires nvidia-container-toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # --- Optional: clean library (mute listed words) - docs/clean-library.md -----
+  # docker compose --profile cleaner up -d --build cleaner
+  cleaner:
+    build:
+      context: ../services/cleaner
+      args:
+        TORCH_INDEX: ${CLEANER_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+    container_name: music-cleaner
+    restart: unless-stopped
+    profiles: ["cleaner"]
+    environment:
+      # Both folders live under MEDIA_ROOT so unchanged songs can be hardlinked (no extra space).
+      SOURCE_DIR: /media/${MUSIC_SUBDIR:-music}
+      CLEAN_DIR: /media/${CLEAN_SUBDIR:-music-clean}
+      DATA_DIR: /data
+      WORDLIST: /config/words.txt
+      INTERVAL: ${CLEANER_INTERVAL:-21600}        # re-scan every 6 h for new music / word-list edits
+      WHISPER_MODEL: ${CLEANER_WHISPER_MODEL:-small}
+      DEMUCS_MODEL: ${CLEANER_DEMUCS_MODEL:-htdemucs}
+      TRUST_LYRICS: ${CLEANER_TRUST_LYRICS:-true}
+      GENIUS_ACCESS_TOKEN: ${GENIUS_ACCESS_TOKEN:-}
+    volumes:
+      - ${MEDIA_ROOT:?set MEDIA_ROOT in .env to the folder containing your music folder}:/media
+      - ./cleaner/words.txt:/config/words.txt:ro
+      - ./data/cleaner:/data
+      - ./data/cleaner-models:/root/.cache
+    # NVIDIA GPU (much faster; also set CLEANER_TORCH_INDEX in .env and rebuild):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

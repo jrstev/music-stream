@@ -1,0 +1,158 @@
+{#-
+  Shared helpers for packages/music_voice.yaml (Home Assistant reusable templates).
+  Import with:  {% from 'music_voice.jinja' import select_best %}
+  Reload after edits: Developer tools -> YAML -> "Reusable templates", or restart.
+
+  Blocklist format (built from the "Blocked songs" to-do list):
+    [{'t': <normalized title, or '*' for any title>, 'a': <normalized artist, or ''>}, ...]
+-#}
+
+{#- Normalize a title/artist for comparison:
+    "Teardrop - 2006 Remaster" / "Teardrop (Live)" / "TEARDROP!" -> "teardrop" -#}
+{%- macro norm(s) -%}
+{{- (s or '') | string | lower
+    | regex_replace('\\(.*?\\)|\\[.*?\\]', '')
+    | regex_replace('\\s+-\\s+.*$', '')
+    | regex_replace('[^a-z0-9& ]', '')
+    | regex_replace('\\s+', ' ')
+    | trim -}}
+{%- endmacro -%}
+
+{#- Build the blocklist from a todo.get_items response. Only open (not ticked-off) items count.
+    Item summary = song title ("*" = every song by the artist); description = artist (optional). -#}
+{%- macro blocklist_from_todo(response, entity_id) -%}
+{%- set ns = namespace(out=[]) -%}
+{%- for i in ((response or {}).get(entity_id, {}) or {}).get('items', []) -%}
+  {%- if i.status | default('needs_action') == 'needs_action' -%}
+    {%- set t = (i.summary | default('') | trim) -%}
+    {%- set entry = {'t': '*' if t in ['*', ''] else norm(t), 'a': norm(i.description | default(''))} -%}
+    {%- if entry.t != '*' or entry.a -%}{%- set ns.out = ns.out + [entry] -%}{%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- ns.out -}}
+{%- endmacro -%}
+
+{#- 'yes' if the song (title may be '' for albums/artists) or any of its artists is blocked. -#}
+{%- macro is_blocked(blocklist, title, artists) -%}
+{%- set t = norm(title) -%}
+{%- set ns = namespace(arts=[], hit=false) -%}
+{%- for a in artists or [] -%}{%- set ns.arts = ns.arts + [norm(a)] -%}{%- endfor -%}
+{%- for e in blocklist or [] -%}
+  {%- set title_ok = e.t == '*' or (t != '' and e.t == t) -%}
+  {%- set artist_ok = not e.a or e.a in ns.arts -%}
+  {%- if title_ok and artist_ok -%}{%- set ns.hit = true -%}{%- endif -%}
+{%- endfor -%}
+{{- 'yes' if ns.hit else '' -}}
+{%- endmacro -%}
+
+{#- Same as is_blocked, but reads a todo.get_items response directly (for use inside a
+    single template, where a macro's string output can't be turned back into a list). -#}
+{%- macro is_blocked_todo(response, entity_id, title, artists) -%}
+{%- set t = norm(title) -%}
+{%- set ns = namespace(arts=[], hit=false) -%}
+{%- for a in artists or [] -%}{%- set ns.arts = ns.arts + [norm(a)] -%}{%- endfor -%}
+{%- for i in ((response or {}).get(entity_id, {}) or {}).get('items', []) -%}
+  {%- if i.status | default('needs_action') == 'needs_action' -%}
+    {%- set raw = (i.summary | default('') | trim) -%}
+    {%- set et = '*' if raw in ['*', ''] else norm(raw) -%}
+    {%- set ea = norm(i.description | default('')) -%}
+    {%- if (et != '*' or ea) and (et == '*' or (t != '' and et == t)) and (not ea or ea in ns.arts) -%}
+      {%- set ns.hit = true -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- 'yes' if ns.hit else '' -}}
+{%- endmacro -%}
+
+{#- Possible readings of a spoken request, most likely first: [{'name': ..., 'artist': ...}, ...]
+    "stand" by "me"             -> also try the title "stand by me"
+    "kid a by radiohead" (one)  -> also try "kid a" by "radiohead" -#}
+{%- macro readings(q, by, kind, exact) -%}
+{%- set q = (q or '') | trim -%}
+{%- set by = (by or '') | trim -%}
+{%- if exact or kind not in ['track', 'album'] -%}
+  {{- [{'name': q, 'artist': by}] -}}
+{%- elif by -%}
+  {{- [{'name': q, 'artist': by}, {'name': q ~ ' by ' ~ by, 'artist': ''}] -}}
+{%- elif ' by ' in q -%}
+  {%- set parts = q.rsplit(' by ', 1) -%}
+  {{- [{'name': parts[0], 'artist': parts[1]}, {'name': q, 'artist': ''}] -}}
+{%- else -%}
+  {{- [{'name': q, 'artist': ''}] -}}
+{%- endif -%}
+{%- endmacro -%}
+
+{#- Open blocklist items matching any reading, as [{'uid':..., 'summary':..., 'description':...}].
+    kind 'artist' matches "*" entries for that artist; 'track' matches title entries
+    (and the artist too when the reading has one); 'any' matches either. -#}
+{%- macro find_entries(response, entity_id, readings_list, kind) -%}
+{%- set ns = namespace(out=[]) -%}
+{%- for i in ((response or {}).get(entity_id, {}) or {}).get('items', []) -%}
+  {%- if i.status | default('needs_action') == 'needs_action' -%}
+    {%- set raw = (i.summary | default('') | trim) -%}
+    {%- set et = '*' if raw in ['*', ''] else norm(raw) -%}
+    {%- set ea = norm(i.description | default('')) -%}
+    {%- set acc = namespace(hit=false) -%}
+    {%- for r in readings_list -%}
+      {%- set rn = norm(r.name) -%}
+      {%- set ra = norm(r.artist) -%}
+      {%- if kind in ['artist', 'any'] and et == '*' and ea == rn and not ra -%}{%- set acc.hit = true -%}{%- endif -%}
+      {%- if kind in ['track', 'any'] and et != '*' and et == rn and (not ra or ea == ra) -%}{%- set acc.hit = true -%}{%- endif -%}
+    {%- endfor -%}
+    {%- if acc.hit -%}
+      {%- set ns.out = ns.out + [{'uid': i.uid | default(raw), 'summary': raw, 'description': i.description | default('')}] -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- ns.out -}}
+{%- endmacro -%}
+
+{#- Pick the best search result.
+    searches: [[reading, search_response], ...]  with reading = {'name': ..., 'artist': ...}
+    Returns {'item': <best result or None>, 'blocked': <number of matching results skipped as blocked>} -#}
+{%- macro select_best(searches, kind, blocklist) -%}
+{%- set ns = namespace(best=none, blocked=0) -%}
+{%- for pair in searches -%}
+  {%- set reading = pair[0] -%}
+  {%- for item in ((pair[1] or {}).get(kind ~ 's', []) or []) -%}
+    {%- if ns.best is none -%}
+      {%- set names = item.artists | default([]) | map(attribute='name') | map('lower') | join(' | ') -%}
+      {%- if not reading.artist or reading.artist | lower in names -%}
+        {%- set arts = (item.artists | default([]) | map(attribute='name') | list) if kind != 'artist' else [item.name] -%}
+        {%- if is_blocked(blocklist, item.name if kind == 'track' else '', arts) -%}
+          {%- set ns.blocked = ns.blocked + 1 -%}
+        {%- else -%}
+          {%- set ns.best = item -%}
+        {%- endif -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
+{{- {'item': ns.best, 'blocked': ns.blocked} -}}
+{%- endmacro -%}
+
+{#- Up to `limit` distinct non-blocked results (name/artist) for "did you mean". -#}
+{%- macro alternatives(responses, kind, blocklist, limit=5) -%}
+{%- set ns = namespace(out=[]) -%}
+{%- for found in responses -%}
+  {%- for item in ((found or {}).get(kind ~ 's', []) or [])[:limit] -%}
+    {%- set arts = (item.artists | default([]) | map(attribute='name') | list) if kind != 'artist' else [item.name] -%}
+    {%- set entry = {'name': item.name, 'artist': arts[0] if arts and kind != 'artist' else ''} -%}
+    {%- if entry not in ns.out and ns.out | count < limit
+          and not is_blocked(blocklist, item.name if kind == 'track' else '', arts) -%}
+      {%- set ns.out = ns.out + [entry] -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
+{{- ns.out -}}
+{%- endmacro -%}
+
+{#- Human name of the service a Music Assistant URI comes from. -#}
+{%- macro source_name(uri) -%}
+{%- set scheme = (uri or '').split('://')[0] -%}
+{%- set names = {'library': 'your library', 'filesystem_local': 'your library', 'filesystem_smb': 'your library',
+                 'subsonic': 'your library', 'opensubsonic': 'your library', 'jellyfin': 'your library',
+                 'plex': 'your library', 'spotify': 'Spotify', 'ytmusic': 'YouTube Music', 'tidal': 'Tidal',
+                 'qobuz': 'Qobuz', 'deezer': 'Deezer', 'apple_music': 'Apple Music', 'soundcloud': 'SoundCloud'} -%}
+{{- names.get(scheme.split('--')[0], scheme | replace('_', ' ') | title) -}}
+{%- endmacro -%}

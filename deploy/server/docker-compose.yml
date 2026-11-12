@@ -1,0 +1,106 @@
+# Server side of the "Home Assistant Green + server" layout (docs/setup-green.md).
+#
+# Runs on a PC/NAS on your home network. Home Assistant and Music Assistant run
+# on the Green; they reach these services over the LAN:
+#   Navidrome  :4533   <- Music Assistant (Subsonic provider)
+#   whisper    :10300  <- Home Assistant (Wyoming integration, speech-to-text)
+#   piper      :10200  <- Home Assistant (Wyoming integration, spoken replies)
+#   ollama     :11434  <- Home Assistant (Ollama integration)         [profile ai-local]
+#   cleaner            (no port: writes the clean library to disk)    [profile cleaner]
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d                                   # navidrome, whisper, piper
+#   docker compose --profile cleaner up -d --build         # + clean library
+#   docker compose --profile ai-local up -d                # + local AI model
+#
+# These ports have no authentication except Navidrome's login: keep them on your
+# LAN (don't port-forward them on your router).
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: "1h"
+      ND_LOGLEVEL: "info"
+      ND_ENABLESHARING: "true"
+    volumes:
+      - ./data/navidrome:/data
+      # To serve the clean copy, set NAVIDROME_MUSIC_DIR to the clean folder (docs/clean-library.md)
+      - ${NAVIDROME_MUSIC_DIR:-${MUSIC_DIR:?set MUSIC_DIR in .env}}:/music:ro
+
+  whisper:            # speech-to-text for Assist on the Green
+    image: rhasspy/wyoming-whisper:latest
+    container_name: whisper
+    restart: unless-stopped
+    # small-int8 is a good default on a PC; medium-int8 is more accurate on unusual names.
+    command: --model ${WHISPER_MODEL:-small-int8} --language ${VOICE_LANGUAGE:-en} --data-dir /data
+    ports:
+      - "10300:10300"
+    volumes:
+      - ./data/whisper:/data
+
+  piper:              # text-to-speech (spoken replies)
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
+    restart: unless-stopped
+    command: --voice ${PIPER_VOICE:-en_US-lessac-medium} --data-dir /data
+    ports:
+      - "10200:10200"
+    volumes:
+      - ./data/piper:/data
+
+  ollama:             # optional local AI model (docs/ai-assist.md)
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    profiles: ["ai-local"]
+    # NVIDIA GPU: uncomment (requires nvidia-container-toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  cleaner:            # optional clean library (docs/clean-library.md)
+    build:
+      context: ../../services/cleaner
+      args:
+        TORCH_INDEX: ${CLEANER_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+    container_name: music-cleaner
+    restart: unless-stopped
+    profiles: ["cleaner"]
+    environment:
+      # Both folders live under MEDIA_ROOT so unchanged songs can be hardlinked (no extra space).
+      SOURCE_DIR: /media/${MUSIC_SUBDIR:-music}
+      CLEAN_DIR: /media/${CLEAN_SUBDIR:-music-clean}
+      DATA_DIR: /data
+      WORDLIST: /config/words.txt
+      INTERVAL: ${CLEANER_INTERVAL:-21600}
+      WHISPER_MODEL: ${CLEANER_WHISPER_MODEL:-small}
+      DEMUCS_MODEL: ${CLEANER_DEMUCS_MODEL:-htdemucs}
+      TRUST_LYRICS: ${CLEANER_TRUST_LYRICS:-true}
+      GENIUS_ACCESS_TOKEN: ${GENIUS_ACCESS_TOKEN:-}
+    volumes:
+      - ${MEDIA_ROOT:?set MEDIA_ROOT in .env to the folder containing your music folder}:/media
+      - ../cleaner/words.txt:/config/words.txt:ro
+      - ./data/cleaner:/data
+      - ./data/cleaner-models:/root/.cache
+    # NVIDIA GPU (much faster; also set CLEANER_TORCH_INDEX in .env and rebuild):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
