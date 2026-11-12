@@ -22,7 +22,7 @@ speech ─► whisper ─► AI conversation agent ──(tool call)──► sc
 The AI never plays anything itself. It turns your request into structured fields and calls two Home Assistant scripts from `deploy/homeassistant/packages/music_voice.yaml`. Home Assistant offers every script exposed to Assist as a tool, with the script's field descriptions as the tool's parameters.
 - **Play music from library:** searches the library and checks the artist. It plays the best match, or returns `found: false` plus close alternatives.
 - **Search music library:** looks things up without playing, so the AI can check titles and spellings before retrying. It can include streaming services.
-- **Block current song:** adds what's playing to your blocklist and skips it.
+- **Block current song / Block song / Unblock song:** manage the blocklist, either for what's playing or by name.
 
 The play script checks your library first, then Spotify (or whatever is connected in Music Assistant). It never returns blocked songs; a blocked request comes back as `blocked: true`, and the prompt tells the AI not to work around it. See [voice-assist.md → Spotify fallback and blocklist](voice-assist.md#spotify-fallback-and-blocklist).
 
@@ -61,6 +61,8 @@ Do the [voice-assist.md](voice-assist.md) setup first (stack, whisper/piper, pac
    - `script.music_play_from_library`
    - `script.music_library_search`
    - `script.music_block_current_song`
+   - `script.music_block_song`
+   - `script.music_unblock_song`
 
    Keep the exposed list short. Every exposed entity goes into the AI's context, which costs tokens and slows replies. The Music Assistant speakers themselves don't need to be exposed for music.
 3. **Configure the agent.** In the integration's options (the conversation agent entry):

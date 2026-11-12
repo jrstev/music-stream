@@ -108,11 +108,39 @@ class VoiceSentences(unittest.TestCase):
         self.assertEqual(self.match("block this song in the office", intent="BlockCurrentSong")["area"],
                          "office")
 
+    def test_block_by_name(self):
+        # One wildcard beats two, so "X by Y" arrives whole; music_block_song splits it.
+        got = self.match("block wonderwall by oasis", intent="BlockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("wonderwall by oasis", "any"))
+        got = self.match("block the artist nickelback", intent="BlockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("nickelback", "artist"))
+        got = self.match("block nickelback", intent="BlockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("nickelback", "any"))
+        got = self.match("add mr brightside to my blocklist", intent="BlockSong")
+        self.assertEqual(got["query"], "mr brightside")
+        got = self.match("never play baby shark again", intent="BlockSong")
+        self.assertEqual(got["query"], "baby shark")
+
+    def test_current_song_phrases_still_win(self):
+        # Literal phrases beat the "block {query}" wildcard templates.
+        for text in ["block this song", "never play this song again", "add this song to my blocklist"]:
+            self.match(text, intent="BlockCurrentSong")
+
+    def test_unblock(self):
+        got = self.match("unblock wonderwall by oasis", intent="UnblockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("wonderwall by oasis", "any"))
+        got = self.match("unblock the band nickelback", intent="UnblockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("nickelback", "artist"))
+        got = self.match("remove baby shark from the blocked list", intent="UnblockSong")
+        self.assertEqual((got["query"], got["media_type"]), ("baby shark", "any"))
+
     def test_package_is_valid_yaml(self):
         pkg = yaml.safe_load(PACKAGE.read_text())
-        self.assertEqual(set(pkg["intent_script"]), {"PlayLocalMusic", "BlockCurrentSong"})
+        self.assertEqual(set(pkg["intent_script"]),
+                         {"PlayLocalMusic", "BlockCurrentSong", "BlockSong", "UnblockSong"})
         self.assertEqual(set(pkg["script"]),
-                         {"music_play_from_library", "music_library_search", "music_block_current_song"})
+                         {"music_play_from_library", "music_library_search", "music_block_current_song",
+                          "music_block_song", "music_unblock_song"})
 
 
 if __name__ == "__main__":

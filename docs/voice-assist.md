@@ -33,7 +33,11 @@ Add "**in the kitchen**" or "**on the office**" to any of these to choose the sp
 
 **Your library first, then Spotify.** If a request isn't in your library, it plays automatically from a streaming service connected in Music Assistant (see [Spotify fallback](#spotify-fallback-and-blocklist)), and the reply says so: "Playing Nightcall by Kavinsky from Spotify." Add "**from my library**" to stay in your library, or "**on Spotify**" to skip it.
 
-**"Block this song"** (or "never play this song again") adds what's playing to your blocklist and skips it.
+**Blocking by voice:**
+- "**block this song**" / "never play this song again": blocks what's playing and skips it.
+- "**block Wonderwall by Oasis**" / "block the song Baby Shark" / "add Mr Brightside to my blocklist": blocks a song by name.
+- "**block the artist Nickelback**" / "block Nickelback": blocks everything by an artist.
+- "**unblock Wonderwall**" / "remove Nickelback from my blocked list": unblocks.
 
 Titles that contain "by" (e.g. "Stand by Me") usually work even without "called". The intent searches both readings ("stand" by "me", and the full title "stand by me") and only accepts a result whose artist actually matches.
 
@@ -94,7 +98,9 @@ Starting from the stack in `deploy/` (see the main README):
 Blocked songs are never played: not from your library, not from Spotify, and not when they come up inside an album, playlist or radio mode.
 
 1. **Create the list:** Settings → Devices & services → Add integration → **Local To-do**, named **Blocked songs**. This creates `todo.blocked_songs`.
-2. **Add entries** in the HA app's To-do lists, or say "block this song" while it plays:
+2. **Add entries** any of these ways:
+   - **By voice or AI:** "block this song" while it plays, or by name: "block Wonderwall by Oasis", "block the artist Nickelback". The name is looked up in your library and on Spotify first, so the list gets the real title and artist ("block wonderwall" stores *Wonderwall* by *Oasis*). If nothing is found, it's stored as you said it. If the song is playing somewhere right now, it's skipped immediately.
+   - **In the app:** HA app → To-do lists → Blocked songs → add an item:
 
    | Item | Description | Blocks |
    |---|---|---|
@@ -103,7 +109,7 @@ Blocked songs are never played: not from your library, not from Spotify, and not
    | `*` | `Nickelback` | everything by that artist, including "play music by Nickelback" |
 
    Matching ignores case, punctuation, and "(…)" / "[…]" / " - …" suffixes.
-3. **Unblock** by ticking the item off, or deleting it.
+3. **Unblock** by saying "unblock Wonderwall" / "unblock Nickelback", or tick the item off / delete it in the app. Saying "unblock Wonderwall" with no artist removes every *Wonderwall* entry.
 
 How it's enforced:
 - **Requests:** the play script and the search tool skip blocked results. A request that matches a blocked song gets "… is on your blocked list" and is never retried on Spotify.

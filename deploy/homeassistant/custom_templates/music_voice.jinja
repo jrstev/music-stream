@@ -64,6 +64,49 @@
 {{- 'yes' if ns.hit else '' -}}
 {%- endmacro -%}
 
+{#- Possible readings of a spoken request, most likely first: [{'name': ..., 'artist': ...}, ...]
+    "stand" by "me"             -> also try the title "stand by me"
+    "kid a by radiohead" (one)  -> also try "kid a" by "radiohead" -#}
+{%- macro readings(q, by, kind, exact) -%}
+{%- set q = (q or '') | trim -%}
+{%- set by = (by or '') | trim -%}
+{%- if exact or kind not in ['track', 'album'] -%}
+  {{- [{'name': q, 'artist': by}] -}}
+{%- elif by -%}
+  {{- [{'name': q, 'artist': by}, {'name': q ~ ' by ' ~ by, 'artist': ''}] -}}
+{%- elif ' by ' in q -%}
+  {%- set parts = q.rsplit(' by ', 1) -%}
+  {{- [{'name': parts[0], 'artist': parts[1]}, {'name': q, 'artist': ''}] -}}
+{%- else -%}
+  {{- [{'name': q, 'artist': ''}] -}}
+{%- endif -%}
+{%- endmacro -%}
+
+{#- Open blocklist items matching any reading, as [{'uid':..., 'summary':..., 'description':...}].
+    kind 'artist' matches "*" entries for that artist; 'track' matches title entries
+    (and the artist too when the reading has one); 'any' matches either. -#}
+{%- macro find_entries(response, entity_id, readings_list, kind) -%}
+{%- set ns = namespace(out=[]) -%}
+{%- for i in ((response or {}).get(entity_id, {}) or {}).get('items', []) -%}
+  {%- if i.status | default('needs_action') == 'needs_action' -%}
+    {%- set raw = (i.summary | default('') | trim) -%}
+    {%- set et = '*' if raw in ['*', ''] else norm(raw) -%}
+    {%- set ea = norm(i.description | default('')) -%}
+    {%- set acc = namespace(hit=false) -%}
+    {%- for r in readings_list -%}
+      {%- set rn = norm(r.name) -%}
+      {%- set ra = norm(r.artist) -%}
+      {%- if kind in ['artist', 'any'] and et == '*' and ea == rn and not ra -%}{%- set acc.hit = true -%}{%- endif -%}
+      {%- if kind in ['track', 'any'] and et != '*' and et == rn and (not ra or ea == ra) -%}{%- set acc.hit = true -%}{%- endif -%}
+    {%- endfor -%}
+    {%- if acc.hit -%}
+      {%- set ns.out = ns.out + [{'uid': i.uid | default(raw), 'summary': raw, 'description': i.description | default('')}] -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- ns.out -}}
+{%- endmacro -%}
+
 {#- Pick the best search result.
     searches: [[reading, search_response], ...]  with reading = {'name': ..., 'artist': ...}
     Returns {'item': <best result or None>, 'blocked': <number of matching results skipped as blocked>} -#}

@@ -11,6 +11,8 @@
 #   - Your library is searched first, then streaming services (e.g. Spotify).
 #     Add "from my library" to never use streaming, or "on Spotify" to skip the library.
 #   - "Block this song" adds what's playing to the blocklist and skips it.
+#     "Block Wonderwall by Oasis" / "block the artist Nickelback" block by name;
+#     "unblock ..." removes an entry.
 language: en
 intents:
   PlayLocalMusic:
@@ -62,6 +64,41 @@ intents:
           - "block (this|the current) (song|track) [<where>]"
           - "(never|don't ever) play this [song|track] again [<where>]"
           - "add this (song|track) to [my|the] (blocklist|blocked list|blocked songs)"
+
+  BlockSong:
+    data:
+      # "X by Y" arrives as one query; music_block_song splits and looks it up.
+      - sentences:
+          - "block [the] (song|track) {query}"
+        slots:
+          media_type: track
+      - sentences:
+          - "block [the] (artist|band) {query}"
+          - "block (all|any) [music|songs] (by|from) {query}"
+        slots:
+          media_type: artist
+      - sentences:
+          - "block {query}"
+          - "(never|don't ever) play {query} again"
+          - "add {query} to [my|the] (blocklist|blocked list|blocked songs)"
+        slots:
+          media_type: any
+
+  UnblockSong:
+    data:
+      - sentences:
+          - "unblock [the] (song|track) {query}"
+        slots:
+          media_type: track
+      - sentences:
+          - "unblock [the] (artist|band) {query}"
+        slots:
+          media_type: artist
+      - sentences:
+          - "unblock {query}"
+          - "remove {query} from [my|the] (blocklist|blocked list|blocked songs)"
+        slots:
+          media_type: any
 
 expansion_rules:
   where: "(in|on) [the] {area}"

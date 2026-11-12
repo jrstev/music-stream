@@ -5,10 +5,12 @@
 #     packages: !include_dir_named packages
 # Shared matching logic lives in custom_templates/music_voice.jinja.
 #
-# Scripts (expose all three to Assist so an AI agent can call them as tools):
+# Scripts (expose all of them to Assist so an AI agent can call them as tools):
 #   script.music_play_from_library   your library first, then streaming services (e.g. Spotify), never blocked songs
 #   script.music_library_search      look things up without playing
 #   script.music_block_current_song  add what's playing to the blocklist and skip it
+#   script.music_block_song          block a song or artist by name ("block Wonderwall by Oasis")
+#   script.music_unblock_song        remove a song or artist from the blocklist
 # Automation:
 #   automation.music_skip_blocked_songs  skips blocked songs during albums, playlists, radio, manual play
 #
@@ -100,22 +102,8 @@ script:
             {% else %}[]{% endif %}
           player: >-
             {{ area_players[0] if area_players | count > 0 else default_player }}
-          # Readings to try, most likely first: [{"name": ..., "artist": ...}, ...]
-          #   "stand" by "me"            -> also try the title "stand by me"
-          #   "kid a by radiohead" (one) -> also try "kid a" by "radiohead"
           readings: >-
-            {% set r = [] %}
-            {% if is_exact or kind not in ['track', 'album'] %}
-              {% set r = [{'name': q, 'artist': by}] %}
-            {% elif by %}
-              {% set r = [{'name': q, 'artist': by}, {'name': q ~ ' by ' ~ by, 'artist': ''}] %}
-            {% elif ' by ' in q %}
-              {% set parts = q.rsplit(' by ', 1) %}
-              {% set r = [{'name': parts[0], 'artist': parts[1]}, {'name': q, 'artist': ''}] %}
-            {% else %}
-              {% set r = [{'name': q, 'artist': ''}] %}
-            {% endif %}
-            {{ r }}
+            {% from 'music_voice.jinja' import readings %}{{ readings(q, by, kind, is_exact) }}
           first: "{{ readings[0] }}"
           second: "{{ readings[1] if readings | count > 1 else readings[0] }}"
           request_text: "{{ ('the ' ~ kind ~ ' ' if kind != 'track' else '') ~ q ~ (' by ' ~ by if by else '') }}"
@@ -396,6 +384,229 @@ script:
       - stop: done
         response_variable: result
 
+  music_block_song:
+    alias: Block song
+    description: >-
+      Adds a song or a whole artist to the user's blocklist so it is never
+      played (from the library or streaming services). Use for "block
+      Wonderwall by Oasis", "never play Nickelback". For the song that is
+      playing right now, use "Block current song" instead. The name is looked
+      up first so the list stores the real title and artist.
+    mode: queued
+    icon: mdi:playlist-remove
+    fields:
+      query:
+        name: Name
+        description: Song title, or artist name when media_type is artist.
+        required: true
+        example: Wonderwall
+        selector:
+          text:
+      artist:
+        name: Artist
+        description: Artist of the song, if known. Leave empty to block the title by any artist.
+        example: Oasis
+        selector:
+          text:
+      media_type:
+        name: What to block
+        description: >-
+          "track" (one song), "artist" (everything by an artist), or "any" to
+          decide from the search (an exact artist name match blocks the artist).
+        default: any
+        selector:
+          select:
+            options: [any, track, artist]
+      exact:
+        name: Exact
+        description: True when query and artist are already cleanly separated (AI callers should set this).
+        default: false
+        selector:
+          boolean:
+    sequence:
+      - variables:
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          q: "{{ query | default('') | trim }}"
+          by: "{{ artist | default('') | trim }}"
+          kind: "{{ media_type | default('any', true) }}"
+          is_exact: "{{ exact | default(false) | bool }}"
+          mass_players: "{{ integration_entities('music_assistant') | select('match', 'media_player\\.') | list }}"
+          readings: >-
+            {% from 'music_voice.jinja' import readings %}{{ readings(q, by, 'track' if kind == 'any' else kind, is_exact) }}
+          first: "{{ readings[0] }}"
+          second: "{{ readings[1] if readings | count > 1 else readings[0] }}"
+      - if: "{{ not q }}"
+        then:
+          - variables:
+              result: {blocked: false, speech: "Which song should I block?"}
+          - stop: nothing to block
+            response_variable: result
+
+      # Look the name up everywhere (library + streaming) to get the real title/artist.
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(mass_players[0]) }}"
+          name: "{{ first.name }}"
+          media_type: "{{ ['artist'] if kind == 'artist' else (['track'] if kind == 'track' else ['track', 'artist']) }}"
+          limit: 10
+          library_only: false
+        response_variable: found_first
+        continue_on_error: true
+      - action: music_assistant.search
+        data:
+          config_entry_id: "{{ config_entry_id(mass_players[0]) }}"
+          name: "{{ second.name }}"
+          media_type: "{{ ['artist'] if kind == 'artist' else ['track'] }}"
+          limit: 10
+          library_only: false
+        response_variable: found_second
+        continue_on_error: true
+      - action: todo.get_items
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          status: needs_action
+        response_variable: blocked_items
+        continue_on_error: true
+
+      - variables:
+          # The entry to add: {'title': <title or '*'>, 'artist': <artist or ''>, 'label': <spoken name>}
+          entry: >-
+            {% from 'music_voice.jinja' import norm %}
+            {% set ns = namespace(artist=none, track=none) %}
+            {% if kind in ['artist', 'any'] and not by %}
+              {% for a in ((found_first | default({}) or {}).get('artists', []) or []) %}
+                {% if ns.artist is none and norm(a.name) == norm(q) %}{% set ns.artist = a.name %}{% endif %}
+              {% endfor %}
+            {% endif %}
+            {% if kind == 'artist' or ns.artist is not none %}
+              {% set name = ns.artist if ns.artist is not none else q %}
+              {{ {'title': '*', 'artist': name, 'label': 'everything by ' ~ name} }}
+            {% else %}
+              {% for pair in [[first, found_first | default({})], [second, found_second | default({})]] %}
+                {% for item in ((pair[1] or {}).get('tracks', []) or []) %}
+                  {% set names = item.artists | default([]) | map(attribute='name') | map('lower') | join(' | ') %}
+                  {% if ns.track is none and norm(item.name) == norm(pair[0].name)
+                        and (not pair[0].artist or pair[0].artist | lower in names) %}
+                    {% set ns.track = {'title': item.name,
+                                       'artist': item.artists[0].name if item.artists is defined and item.artists else ''} %}
+                  {% endif %}
+                {% endfor %}
+              {% endfor %}
+              {% set t = ns.track if ns.track is not none else {'title': first.name, 'artist': first.artist} %}
+              {{ dict(t, label=t.title ~ (' by ' ~ t.artist if t.artist else '')) }}
+            {% endif %}
+          already: >-
+            {% from 'music_voice.jinja' import is_blocked_todo %}
+            {{ is_blocked_todo(blocked_items | default({}), blocklist_entity,
+                               '' if entry.title == '*' else entry.title, [entry.artist]) == 'yes' }}
+
+      - if: "{{ already }}"
+        then:
+          - variables:
+              result: {blocked: true, speech: "{{ entry.label | capitalize }} is already blocked."}
+          - stop: already blocked
+            response_variable: result
+
+      - action: todo.add_item
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          item: "{{ entry.title }}"
+          description: "{{ entry.artist }}"
+
+      # If it's playing right now somewhere, skip it.
+      - variables:
+          playing_blocked: >-
+            {% from 'music_voice.jinja' import norm, is_blocked %}
+            {% set bl = [{'t': '*' if entry.title == '*' else norm(entry.title), 'a': norm(entry.artist)}] %}
+            {% set ns = namespace(out=[]) %}
+            {% for p in mass_players | select('is_state', 'playing') %}
+              {% if is_blocked(bl, state_attr(p, 'media_title'), [state_attr(p, 'media_artist')]) %}{% set ns.out = ns.out + [p] %}{% endif %}
+            {% endfor %}
+            {{ ns.out }}
+      - if: "{{ playing_blocked | count > 0 }}"
+        then:
+          - action: media_player.media_next_track
+            target:
+              entity_id: "{{ playing_blocked }}"
+            continue_on_error: true
+
+      - variables:
+          result:
+            blocked: true
+            entry: "{{ entry.label }}"
+            speech: "OK, I've blocked {{ entry.label }}."
+      - stop: done
+        response_variable: result
+
+  music_unblock_song:
+    alias: Unblock song
+    description: >-
+      Removes a song or artist from the user's blocklist so it can be played
+      again. Use for "unblock Wonderwall", "unblock Nickelback".
+    mode: queued
+    icon: mdi:playlist-check
+    fields:
+      query:
+        name: Name
+        description: Song title, or artist name when unblocking an artist.
+        required: true
+        selector:
+          text:
+      artist:
+        name: Artist
+        description: Artist of the song, if given. Leave empty to unblock the title for every artist.
+        selector:
+          text:
+      media_type:
+        name: What to unblock
+        description: '"track", "artist", or "any" (default: matches either).'
+        default: any
+        selector:
+          select:
+            options: [any, track, artist]
+    sequence:
+      - variables:
+          blocklist_entity: todo.blocked_songs           # <-- EDIT if your to-do list has another name
+          q: "{{ query | default('') | trim }}"
+          by: "{{ artist | default('') | trim }}"
+          kind: "{{ media_type | default('any', true) }}"
+          readings: >-
+            {% from 'music_voice.jinja' import readings %}{{ readings(q, by, 'artist' if kind == 'artist' else 'track', false) }}
+      - action: todo.get_items
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          status: needs_action
+        response_variable: blocked_items
+        continue_on_error: true
+      - variables:
+          matches: >-
+            {% from 'music_voice.jinja' import find_entries %}{{ find_entries(blocked_items | default({}), blocklist_entity, readings, kind) }}
+          label: >-
+            {% set m = matches[0] if matches | count > 0 else none %}
+            {% if m is none %}{{ q ~ (' by ' ~ by if by else '') }}
+            {% elif m.summary in ['*', ''] %}everything by {{ m.description }}
+            {% else %}{{ m.summary ~ (' by ' ~ m.description if m.description else '') }}{% endif %}
+      - if: "{{ matches | count == 0 }}"
+        then:
+          - variables:
+              result: {unblocked: false, speech: "{{ label | capitalize }} isn't on your blocked list."}
+          - stop: not blocked
+            response_variable: result
+      - action: todo.remove_item
+        target:
+          entity_id: "{{ blocklist_entity }}"
+        data:
+          item: "{{ matches | map(attribute='uid') | list }}"
+      - variables:
+          result:
+            unblocked: true
+            speech: "OK, {{ label }} {{ 'is' if matches | count == 1 else 'are' }} unblocked."
+      - stop: done
+        response_variable: result
+
 automation:
   - id: music_skip_blocked_songs
     alias: Skip blocked songs
@@ -456,6 +667,32 @@ intent_script:
         response_variable: played
       - stop: done
         response_variable: played
+
+  BlockSong:
+    speech:
+      text: "{{ action_response.speech }}"
+    action:
+      - action: script.music_block_song
+        data:
+          query: "{{ query | default('') }}"
+          artist: "{{ artist | default('') }}"
+          media_type: "{{ media_type | default('any') }}"
+        response_variable: done
+      - stop: done
+        response_variable: done
+
+  UnblockSong:
+    speech:
+      text: "{{ action_response.speech }}"
+    action:
+      - action: script.music_unblock_song
+        data:
+          query: "{{ query | default('') }}"
+          artist: "{{ artist | default('') }}"
+          media_type: "{{ media_type | default('any') }}"
+        response_variable: done
+      - stop: done
+        response_variable: done
 
   BlockCurrentSong:
     speech:

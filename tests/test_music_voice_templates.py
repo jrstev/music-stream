@@ -157,6 +157,107 @@ class Macros(Base):
         self.assertEqual(out, [{"name": "Teardrops", "artist": "Womack & Womack"}])
 
 
+class BlocklistMacros(Base):
+    def test_readings_macro(self):
+        self.assertEqual(self.macro("readings('stand', 'me', 'track', false)"),
+                         [{"name": "stand", "artist": "me"}, {"name": "stand by me", "artist": ""}])
+        self.assertEqual(self.macro("readings('kid a by radiohead', '', 'album', false)"),
+                         [{"name": "kid a", "artist": "radiohead"}, {"name": "kid a by radiohead", "artist": ""}])
+        self.assertEqual(self.macro("readings('Nightcall', 'Kavinsky', 'track', true)"),
+                         [{"name": "Nightcall", "artist": "Kavinsky"}])
+
+    def find(self, readings, kind):
+        resp = todo(("Wonderwall", "Oasis"), ("Wonderwall", "Ryan Adams"), ("*", "Nickelback"),
+                    ("Baby Shark", ""), ("Gone", "x", "completed"))
+        out = self.macro("find_entries(r, e, rd, k)", r=resp, e=TODO, rd=readings, k=kind)
+        return [(m["summary"], m["description"]) for m in out]
+
+    def test_find_entries(self):
+        self.assertEqual(self.find([{"name": "wonderwall", "artist": ""}], "any"),
+                         [("Wonderwall", "Oasis"), ("Wonderwall", "Ryan Adams")])
+        self.assertEqual(self.find([{"name": "wonderwall", "artist": "oasis"}], "track"),
+                         [("Wonderwall", "Oasis")])
+        self.assertEqual(self.find([{"name": "nickelback", "artist": ""}], "any"), [("*", "Nickelback")])
+        self.assertEqual(self.find([{"name": "nickelback", "artist": ""}], "track"), [])
+        self.assertEqual(self.find([{"name": "gone", "artist": ""}], "any"), [])   # ticked off
+
+
+class BlockScripts(Base):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        pkg = yaml.safe_load(PACKAGE.read_text())
+        cls.block = pkg["script"]["music_block_song"]["sequence"]
+        cls.unblock_steps = pkg["script"]["music_unblock_song"]["sequence"]
+
+    def block_entry(self, found_first=None, found_second=None, blocked=(), **fields):
+        ctx = dict(fields, blocklist_entity=TODO)
+        self.render_vars(self.block[0]["variables"], ctx,
+                         ["q", "by", "kind", "is_exact", "readings", "first", "second"])
+        ctx.update(found_first=found_first or {}, found_second=found_second or {}, blocked_items=todo(*blocked))
+        self.render_vars(self.step_with(self.block, "entry"), ctx, ["entry", "already"])
+        return ctx
+
+    def test_song_is_resolved_to_real_names(self):
+        found = {"tracks": [track("Wonderwall - Remastered", "Oasis"), track("Wonderwall", "Oasis")]}
+        ctx = self.block_entry(found, found, query="wonderwall", artist="oasis", media_type="track")
+        self.assertEqual(ctx["entry"], {"title": "Wonderwall - Remastered", "artist": "Oasis",
+                                        "label": "Wonderwall - Remastered by Oasis"})
+        self.assertIs(ctx["already"], False)
+
+    def test_any_with_exact_artist_name_blocks_the_artist(self):
+        found = {"artists": [{"name": "Nickelback", "uri": "spotify://artist/n"}],
+                 "tracks": [track("Nickelback Song", "Someone")]}
+        ctx = self.block_entry(found, {}, query="nickelback", media_type="any")
+        self.assertEqual(ctx["entry"], {"title": "*", "artist": "Nickelback", "label": "everything by Nickelback"})
+
+    def test_unknown_song_blocked_as_spoken(self):
+        ctx = self.block_entry({}, {}, query="some obscure tune", artist="nobody", media_type="track", exact=True)
+        self.assertEqual(ctx["entry"]["title"], "some obscure tune")
+        self.assertEqual(ctx["entry"]["artist"], "nobody")
+
+    def test_whole_phrase_from_voice_is_split(self):
+        # "block wonderwall by oasis" arrives as one query (see test_voice_sentences).
+        found = {"tracks": [track("Wonderwall", "Oasis")]}
+        ctx = self.block_entry(found, {}, query="wonderwall by oasis", media_type="any")
+        self.assertEqual(ctx["entry"]["label"], "Wonderwall by Oasis")
+
+    def test_stand_by_me_reading(self):
+        second = {"tracks": [track("Stand by Me", "Ben E. King")]}
+        ctx = self.block_entry({}, second, query="stand by me", media_type="track")
+        self.assertEqual(ctx["entry"]["label"], "Stand by Me by Ben E. King")
+
+    def test_already_blocked_by_artist_entry(self):
+        found = {"tracks": [track("Photograph", "Nickelback")]}
+        ctx = self.block_entry(found, found, blocked=[("*", "Nickelback")], query="photograph", media_type="track")
+        self.assertIs(ctx["already"], True)
+
+    def unblock(self, blocked, **fields):
+        ctx = dict(fields, blocklist_entity=TODO)
+        self.render_vars(self.unblock_steps[0]["variables"], ctx, ["q", "by", "kind", "readings"])
+        ctx["blocked_items"] = todo(*blocked)
+        self.render_vars(self.step_with(self.unblock_steps, "matches"), ctx, ["matches", "label"])
+        return ctx
+
+    def test_unblock_song(self):
+        ctx = self.unblock([("Wonderwall", "Oasis"), ("Angel", "Massive Attack")], query="wonderwall", media_type="any")
+        self.assertEqual([m["uid"] for m in ctx["matches"]], ["Wonderwall"])
+        self.assertEqual(ctx["label"], "Wonderwall by Oasis")
+
+    def test_unblock_artist(self):
+        ctx = self.unblock([("*", "Nickelback")], query="nickelback", media_type="artist")
+        self.assertEqual(ctx["label"], "everything by Nickelback")
+
+    def test_unblock_by_split_reading(self):
+        ctx = self.unblock([("Wonderwall", "Oasis")], query="wonderwall by oasis", media_type="any")
+        self.assertEqual(len(ctx["matches"]), 1)
+
+    def test_unblock_not_on_list(self):
+        ctx = self.unblock([], query="angel", media_type="any")
+        self.assertEqual(ctx["matches"], [])
+        self.assertEqual(ctx["label"], "angel")
+
+
 class PlayScript(Base):
     """The play script's own templates (readings, picks, replies)."""
 
