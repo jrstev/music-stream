@@ -23,7 +23,8 @@ services:
       ND_ENABLESHARING: "true"
     volumes:
       - ./data/navidrome:/data
-      - ${MUSIC_DIR:?set MUSIC_DIR in .env}:/music:ro
+      # Serve the clean copy instead: set NAVIDROME_MUSIC_DIR to the clean folder (docs/clean-library.md)
+      - ${NAVIDROME_MUSIC_DIR:-${MUSIC_DIR:?set MUSIC_DIR in .env}}:/music:ro
 
   music-assistant:
     image: ghcr.io/music-assistant/server:latest
@@ -106,6 +107,41 @@ services:
       - ./data/ollama:/root/.ollama
     profiles: ["ai-local"]
     # NVIDIA GPU: uncomment (requires nvidia-container-toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # --- Optional: clean library (mute listed words) - docs/clean-library.md -----
+  # docker compose --profile cleaner up -d --build cleaner
+  cleaner:
+    build:
+      context: ../services/cleaner
+      args:
+        TORCH_INDEX: ${CLEANER_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+    container_name: music-cleaner
+    restart: unless-stopped
+    profiles: ["cleaner"]
+    environment:
+      # Both folders live under MEDIA_ROOT so unchanged songs can be hardlinked (no extra space).
+      SOURCE_DIR: /media/${MUSIC_SUBDIR:-music}
+      CLEAN_DIR: /media/${CLEAN_SUBDIR:-music-clean}
+      DATA_DIR: /data
+      WORDLIST: /config/words.txt
+      INTERVAL: ${CLEANER_INTERVAL:-21600}        # re-scan every 6 h for new music / word-list edits
+      WHISPER_MODEL: ${CLEANER_WHISPER_MODEL:-small}
+      DEMUCS_MODEL: ${CLEANER_DEMUCS_MODEL:-htdemucs}
+      TRUST_LYRICS: ${CLEANER_TRUST_LYRICS:-true}
+      GENIUS_ACCESS_TOKEN: ${GENIUS_ACCESS_TOKEN:-}
+    volumes:
+      - ${MEDIA_ROOT:?set MEDIA_ROOT in .env to the folder containing your music folder}:/media
+      - ./cleaner/words.txt:/config/words.txt:ro
+      - ./data/cleaner:/data
+      - ./data/cleaner-models:/root/.cache
+    # NVIDIA GPU (much faster; also set CLEANER_TORCH_INDEX in .env and rebuild):
     # deploy:
     #   resources:
     #     reservations:

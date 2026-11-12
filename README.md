@@ -9,6 +9,7 @@ Play your own self-hosted music library on Google Home / Nest speakers, by voice
 - **The missing piece is voice.** Google won't send "play X" to you, so this repo covers two routes:
   - **Any song, any artist:** Home Assistant **Assist**, fully local. "Okay Nabu, play Teardrop by Massive Attack in the living room" searches your library and plays it on the Nest speaker. See [`docs/voice-assist.md`](docs/voice-assist.md).
   - **Spotify fallback and blocklist:** anything not in your library plays automatically from Spotify (or another service connected in Music Assistant). Songs and artists on your blocklist are never played. See [`docs/voice-assist.md`](docs/voice-assist.md#spotify-fallback-and-blocklist).
+  - **Clean library (optional):** mute words from your own word list in your own files. It makes a clean copy of the library, using lyrics for accuracy, and Navidrome serves that copy. See [`docs/clean-library.md`](docs/clean-library.md).
   - **Natural requests with AI:** put Claude (cloud) or an Ollama model (local) in front, so "play the song from Drive" or "something mellow for cooking" works too. See [`docs/ai-assist.md`](docs/ai-assist.md).
   - **"Hey Google" for favorites:** Google Home routines with fixed phrases that trigger Home Assistant scripts, generated from your playlists (below).
 
@@ -61,6 +62,6 @@ Re-run step 4 whenever you add playlists. You can change the phrasing with `--ph
 ## Development
 
 ```sh
-pip install hassil jinja2 pyyaml   # optional: enables the Assist sentence/template tests
+pip install hassil jinja2 pyyaml mutagen   # optional: enables the Assist and cleaner tests (cleaner tests also need ffmpeg)
 python3 -m unittest discover -s tests
 ```

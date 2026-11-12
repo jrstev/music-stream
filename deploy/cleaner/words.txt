@@ -1,0 +1,12 @@
+# Words to mute in the clean library, one per line. Case doesn't matter.
+# Lines starting with # are comments.
+#
+# Matching (same rules as music-profanity-filter):
+#   - a sung word matches if it equals a listed word (punctuation ignored), or
+#   - a listed word of 4+ letters appears inside it (catches compounds and -ing/-ed forms).
+#   Short words (3 letters or fewer) only match exactly.
+#
+# If this file contains no words, music-profanity-filter's built-in list is used.
+#
+# Edit and save: the next cleaner pass re-checks every song using cached
+# transcripts, and only re-renders songs whose edits actually changed.
